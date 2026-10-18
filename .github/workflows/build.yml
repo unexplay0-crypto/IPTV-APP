@@ -1,0 +1,214 @@
+name: Build UNEX Vision 2.0 Release APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar Codigo do Repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Configurar Flutter Estavel
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Gerar Estrutura Android Completa e Limpa
+        run: |
+          if [ ! -f "android/gradlew" ]; then
+            rm -rf android
+          fi
+          flutter create --platforms=android .
+
+      - name: Configurar Politica de Rede Android (Suporte Total HTTP/HTTPS IPTV)
+        run: |
+          mkdir -p android/app/src/main/res/xml
+          cat << 'EOF' > android/app/src/main/res/xml/network_security_config.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <network-security-config>
+              <base-config cleartextTrafficPermitted="true">
+                  <trust-anchors>
+                      <certificates src="system" />
+                      <certificates src="user" />
+                  </trust-anchors>
+              </base-config>
+          </network-security-config>
+          EOF
+
+      - name: Configurar AndroidManifest.xml (TV Leanback + Aceleracao de Hardware)
+        run: |
+          cat << 'EOF' > android/app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET"/>
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+              <uses-feature android:name="android.software.leanback" android:required="false" />
+
+              <application
+                  android:label="UNEX Vision"
+                  android:name="${applicationName}"
+                  android:icon="@mipmap/ic_launcher"
+                  android:banner="@mipmap/ic_launcher"
+                  android:hardwareAccelerated="true"
+                  android:usesCleartextTraffic="true"
+                  android:networkSecurityConfig="@xml/network_security_config">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:taskAffinity=""
+                      android:theme="@style/LaunchTheme"
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+                      android:hardwareAccelerated="true"
+                      android:windowSoftInputMode="adjustNothing">
+
+                      <meta-data
+                          android:name="io.flutter.embedding.android.NormalTheme"
+                          android:resource="@style/NormalTheme" />
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+
+                  <meta-data
+                      android:name="flutterEmbedding"
+                      android:value="2" />
+              </application>
+          </manifest>
+          EOF
+
+      - name: Injetar Ponte Nativa no MainActivity.kt (Auto-Detect TV, Brilho, Volume e OTA)
+        run: |
+          MAIN_KT=$(find android/app/src/main -name "MainActivity.kt" | head -n 1)
+          PKG_LINE=$(grep "^package " "$MAIN_KT" | head -n 1)
+          echo "$PKG_LINE" > "$MAIN_KT"
+          cat << 'EOF' >> "$MAIN_KT"
+
+          import android.app.UiModeManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.content.res.Configuration
+          import android.media.AudioManager
+          import android.net.Uri
+          import android.os.Bundle
+          import android.view.WindowManager
+          import io.flutter.embedding.android.FlutterActivity
+          import io.flutter.embedding.engine.FlutterEngine
+          import io.flutter.plugin.common.MethodChannel
+          import kotlin.math.roundToInt
+
+          class MainActivity : FlutterActivity() {
+              private val CHANNEL = "unex.vision/native"
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+              }
+
+              override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
+                  super.configureFlutterEngine(flutterEngine)
+
+                  MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)
+                      .setMethodCallHandler { call, result ->
+                          when (call.method) {
+                              "isAndroidTV" -> result.success(detectAndroidTV())
+                              "getBrightness" -> {
+                                  val current = window.attributes.screenBrightness
+                                  val norm = if (current < 0f) 0.5f else current.coerceIn(0.05f, 1.0f)
+                                  result.success(norm.toDouble())
+                              }
+                              "setBrightness" -> {
+                                  val value = (call.argument<Double>("value") ?: 0.5).toFloat().coerceIn(0.05f, 1.0f)
+                                  val lp = window.attributes
+                                  lp.screenBrightness = value
+                                  window.attributes = lp
+                                  result.success(true)
+                              }
+                              "getVolume" -> {
+                                  val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                                  val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                  val cur = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+                                  result.success(cur.toDouble() / max.toDouble())
+                              }
+                              "setVolume" -> {
+                                  val value = (call.argument<Double>("value") ?: 0.5).coerceIn(0.0, 1.0)
+                                  val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                                  val max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                  val target = (value * max).roundToInt().coerceIn(0, max)
+                                  am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+                                  result.success(true)
+                              }
+                              "openExternalUrl" -> {
+                                  val url = call.argument<String>("url") ?: ""
+                                  result.success(openUrlInSystem(url))
+                              }
+                              else -> result.notImplemented()
+                          }
+                      }
+              }
+
+              private fun detectAndroidTV(): Boolean {
+                  val uiModeManager = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
+                  if (uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION) {
+                      return true
+                  }
+                  val pm = packageManager
+                  if (pm.hasSystemFeature(PackageManager.FEATURE_LEANBACK) ||
+                      pm.hasSystemFeature(PackageManager.FEATURE_TELEVISION)
+                  ) {
+                      return true
+                  }
+                  if (!pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)) {
+                      return true
+                  }
+                  return false
+              }
+
+              private fun openUrlInSystem(url: String): Boolean {
+                  if (url.isBlank()) return false
+                  return try {
+                      val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                      startActivity(intent)
+                      true
+                  } catch (e: Exception) {
+                      false
+                  }
+              }
+          }
+          EOF
+
+      - name: Instalar Dependencias Flutter
+        run: flutter pub get
+
+      - name: Compilar APK Release Otimizado
+        run: flutter build apk --release --target-platform android-arm,android-arm64 --tree-shake-icons
+
+      - name: Disponibilizar APK para Download
+        uses: actions/upload-artifact@v4
+        with:
+          name: unex-vision-v2-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
