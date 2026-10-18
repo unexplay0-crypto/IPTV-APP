@@ -25,6 +25,32 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Garantir pubspec.yaml com Dependencias (http e video_player)
+        run: |
+          rm -f pubspec.lock
+          cat << 'EOF' > pubspec.yaml
+          name: iptv_player
+          description: "UNEX Vision 2.0 IPTV Player"
+          publish_to: 'none'
+          version: 2.0.0+1
+
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            http: any
+            video_player: any
+
+          dev_dependencies:
+            flutter_test:
+              sdk: flutter
+
+          flutter:
+            uses-material-design: true
+          EOF
+
       - name: Gerar Estrutura Android Completa e Limpa
         run: |
           if [ ! -f "android/gradlew" ]; then
@@ -201,8 +227,9 @@ jobs:
           }
           EOF
 
-      - name: Instalar Dependencias Flutter
-        run: flutter pub get
+      - name: Instalar Pacotes e Dependencias Flutter
+        run: |
+          flutter pub get
 
       - name: Compilar APK Release Otimizado
         run: flutter build apk --release --target-platform android-arm,android-arm64 --tree-shake-icons
