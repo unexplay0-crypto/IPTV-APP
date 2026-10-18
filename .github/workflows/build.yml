@@ -30,7 +30,7 @@ jobs:
           if [ ! -f "android/gradlew" ]; then
             rm -rf android
           fi
-          flutter create --platforms=android .
+          flutter create --platforms=android --project-name iptv_player --org com.unex.vision .
 
       - name: Configurar Politica de Rede Android (Suporte Total HTTP/HTTPS IPTV)
         run: |
