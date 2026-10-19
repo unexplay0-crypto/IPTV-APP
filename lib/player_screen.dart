@@ -35,7 +35,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
   final FocusNode _playPauseNode = FocusNode();
   VideoScaleMode _scaleMode = VideoScaleMode.contain;
 
-  // Variáveis para Gestos Táteis (Brilho / Volume no Celular)
+  // Variáveis para Gestos Táteis (Exclusivo Celular)
   double _gestureStartVolume = 0.5;
   double _gestureStartBrightness = 0.5;
   int _gestureSeekSeconds = 0;
@@ -46,6 +46,9 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
   @override
   void initState() {
     super.initState();
+    // Isola a superfície de vídeo exclusivamente para a Tela Cheia
+    _engine.setFullScreenActive(true);
+
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
@@ -55,28 +58,37 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     currentItem = widget.initialItem;
     if (currentItem.isAdult) _adultUnlocked = true;
 
-    if (_engine.currentItem?.id != currentItem.id || !_engine.isReady) {
-      _engine.openStream(currentItem, startPosition: widget.initialStartPosition);
-    } else if (widget.initialStartPosition != null && currentItem.type != ContentType.live) {
-      _engine.controller?.seekTo(widget.initialStartPosition!);
-      _engine.controller?.play();
-    } else if (_engine.controller?.value.isPlaying == false) {
-      _engine.controller?.play();
-    }
-
-    _resetOsdTimer();
-
+    // Aguarda o frame inicial para garantir que o mini-player do painel já liberou a superfície
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && widget.deviceMode == DeviceMode.tv && _playPauseNode.canRequestFocus) {
+      if (!mounted) return;
+      if (_engine.currentItem?.id != currentItem.id || !_engine.isReady || _engine.hasError) {
+        _engine.openStream(currentItem, startPosition: widget.initialStartPosition);
+      } else if (widget.initialStartPosition != null && currentItem.type != ContentType.live) {
+        _engine.controller?.seekTo(widget.initialStartPosition!);
+        _engine.controller?.play();
+      } else if (_engine.controller?.value.isPlaying == false) {
+        _engine.controller?.play();
+      }
+
+      if (widget.deviceMode == DeviceMode.tv && _playPauseNode.canRequestFocus) {
         _playPauseNode.requestFocus();
       }
     });
+
+    _resetOsdTimer();
   }
 
   @override
   void dispose() {
     _hideTimer?.cancel();
     _playPauseNode.dispose();
+
+    // Se estava reproduzindo Filme ou Série (VOD), libera o decodificador ao sair da tela cheia
+    if (currentItem.type != ContentType.live) {
+      _engine.stopAndClear();
+    }
+    _engine.setFullScreenActive(false);
+
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     applyDeviceOrientation(widget.deviceMode);
     super.dispose();
@@ -198,7 +210,9 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     return hours > 0 ? '$hours:$mins:$secs' : '$mins:$secs';
   }
 
-  // Gestos Táteis no Telemóvel
+  // ===========================================================================
+  // GESTOS TÁTEIS DE BRILHO, VOLUME E TEMPO (EXCLUSIVO CELULAR)
+  // ===========================================================================
   void _onPanStart(DragStartDetails details) async {
     if (widget.deviceMode == DeviceMode.tv) return;
     _isSeekingByGesture = false;
@@ -255,33 +269,45 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     });
   }
 
+  // ===========================================================================
+  // SUPERFÍCIE DE VÍDEO COMPATÍVEL COM SURFACEVIEW NATIVA E TEXTUREVIEW
+  // ===========================================================================
   Widget _buildVideoSurface(VideoPlayerController ctrl) {
-    final videoWidth = ctrl.value.size.width > 0 ? ctrl.value.size.width : 1280.0;
-    final videoHeight = ctrl.value.size.height > 0 ? ctrl.value.size.height : 720.0;
+    final surfaceKey = ValueKey('full_${currentItem.id}_${_engine.activeFormatLabel}');
+    final rawRatio = ctrl.value.aspectRatio > 0 ? ctrl.value.aspectRatio : (16 / 9);
 
-    if (_scaleMode == VideoScaleMode.contain) {
+    if (_scaleMode == VideoScaleMode.fill) {
+      return SizedBox.expand(
+        child: VideoPlayer(ctrl, key: surfaceKey),
+      );
+    }
+
+    if (_scaleMode == VideoScaleMode.cover) {
+      final screenSize = MediaQuery.of(context).size;
+      final screenRatio = screenSize.width / (screenSize.height > 0 ? screenSize.height : 1.0);
+      final scale = rawRatio > screenRatio ? (rawRatio / screenRatio) : (screenRatio / rawRatio);
       return Center(
-        child: AspectRatio(
-          aspectRatio: ctrl.value.aspectRatio > 0 ? ctrl.value.aspectRatio : (16 / 9),
-          child: VideoPlayer(ctrl),
+        child: Transform.scale(
+          scale: scale.clamp(1.0, 1.5),
+          child: AspectRatio(
+            aspectRatio: rawRatio,
+            child: VideoPlayer(ctrl, key: surfaceKey),
+          ),
         ),
       );
     }
 
-    final fit = _scaleMode == VideoScaleMode.cover ? BoxFit.cover : BoxFit.fill;
-    return SizedBox.expand(
-      child: FittedBox(
-        fit: fit,
-        clipBehavior: Clip.hardEdge,
-        child: SizedBox(
-          width: videoWidth,
-          height: videoHeight,
-          child: VideoPlayer(ctrl),
-        ),
+    return Center(
+      child: AspectRatio(
+        aspectRatio: rawRatio,
+        child: VideoPlayer(ctrl, key: surfaceKey),
       ),
     );
   }
 
+  // ===========================================================================
+  // GAVETA LATERAL DE CANAIS / EPISÓDIOS
+  // ===========================================================================
   Widget _buildSideDrawer() {
     if (!showDrawer) return const SizedBox.shrink();
 
@@ -381,6 +407,9 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     );
   }
 
+  // ===========================================================================
+  // CONSTRUÇÃO PRINCIPAL DO PLAYER (TV + CELULAR)
+  // ===========================================================================
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -419,7 +448,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                     return KeyEventResult.handled;
                   }
 
-                  if (!showOsd && !showDrawer) {
+                  if (!showOsd && !showDrawer && !_engine.hasError) {
                     if (key == LogicalKeyboardKey.select ||
                         key == LogicalKeyboardKey.enter ||
                         key == LogicalKeyboardKey.numpadEnter ||
@@ -454,111 +483,118 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // CAMADA 1: VÍDEO
+                  // CAMADA 1: VÍDEO OU TELA DE ERRO LIMPA
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTap: _toggleOsd,
                     onPanStart: _onPanStart,
                     onPanUpdate: _onPanUpdate,
                     onPanEnd: _onPanEnd,
-                    child: Center(
-                      child: _engine.hasError
-                          ? Center(
-                              child: Container(
-                                padding: const EdgeInsets.all(22),
-                                margin: const EdgeInsets.all(24),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF101420),
-                                  borderRadius: BorderRadius.circular(18),
-                                  border: Border.all(color: Colors.redAccent),
-                                ),
+                    child: _engine.hasError
+                        ? Center(
+                            child: Container(
+                              constraints: const BoxConstraints(maxWidth: 520),
+                              padding: const EdgeInsets.all(24),
+                              margin: const EdgeInsets.all(24),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF101420),
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(color: Colors.redAccent, width: 1.5),
+                              ),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 46),
+                                  const SizedBox(height: 12),
+                                  const Text(
+                                    'Sinal Indisponível no Momento',
+                                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _engine.lastErrorDetails.isNotEmpty
+                                        ? 'Detalhe: ${_engine.lastErrorDetails}'
+                                        : 'Não foi possível decodificar este fluxo no momento.',
+                                    textAlign: TextAlign.center,
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                  ),
+                                  const SizedBox(height: 18),
+                                  Wrap(
+                                    spacing: 12,
+                                    runSpacing: 10,
+                                    alignment: WrapAlignment.center,
+                                    children: [
+                                      TVFocusableItem(
+                                        autofocus: true,
+                                        autoScroll: false,
+                                        onSelect: () => _engine.openStream(
+                                          currentItem,
+                                          forceReload: true,
+                                          tryHlsFallback: true,
+                                        ),
+                                        builder: (c, f) => Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+                                          decoration: BoxDecoration(
+                                            color: f ? Colors.white : const Color(0xFF00E5FF),
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          child: const Text(
+                                            'Tentar Modo Alternativo',
+                                            style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900),
+                                          ),
+                                        ),
+                                      ),
+                                      TVFocusableItem(
+                                        autoScroll: false,
+                                        onSelect: () => Navigator.pop(context),
+                                        builder: (c, f) => Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+                                          decoration: BoxDecoration(
+                                            border: Border.all(color: f ? Colors.white : Colors.white24),
+                                            borderRadius: BorderRadius.circular(10),
+                                          ),
+                                          child: const Text('Voltar'),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )
+                        : isReady
+                            ? _buildVideoSurface(ctrl)
+                            : const Center(
                                 child: Column(
-                                  mainAxisSize: MainAxisSize.min,
+                                  mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 48),
-                                    const SizedBox(height: 12),
-                                    const Text(
-                                      'Sinal Indisponível no Momento',
-                                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-                                    ),
-                                    const SizedBox(height: 6),
+                                    CircularProgressIndicator(color: Color(0xFF00E5FF)),
+                                    SizedBox(height: 12),
                                     Text(
-                                      _engine.lastErrorDetails.isNotEmpty
-                                          ? 'Detalhe: ${_engine.lastErrorDetails}'
-                                          : 'O servidor IPTV pode estar ocupado ou fora do ar.',
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(color: Colors.white70, fontSize: 12),
-                                    ),
-                                    const SizedBox(height: 18),
-                                    Wrap(
-                                      spacing: 12,
-                                      children: [
-                                        TVFocusableItem(
-                                          autofocus: true,
-                                          autoScroll: false,
-                                          onSelect: () => _engine.openStream(currentItem, forceReload: true),
-                                          builder: (c, f) => Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
-                                            decoration: BoxDecoration(
-                                              color: f ? Colors.white : const Color(0xFF00E5FF),
-                                              borderRadius: BorderRadius.circular(10),
-                                            ),
-                                            child: const Text(
-                                              'Tentar Novamente',
-                                              style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900),
-                                            ),
-                                          ),
-                                        ),
-                                        TVFocusableItem(
-                                          autoScroll: false,
-                                          onSelect: () => Navigator.pop(context),
-                                          builder: (c, f) => Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
-                                            decoration: BoxDecoration(
-                                              border: Border.all(color: f ? Colors.white : Colors.white24),
-                                              borderRadius: BorderRadius.circular(10),
-                                            ),
-                                            child: const Text('Voltar'),
-                                          ),
-                                        ),
-                                      ],
+                                      'Inicializando reprodutor de vídeo...',
+                                      style: TextStyle(color: Colors.white70, fontSize: 13),
                                     ),
                                   ],
                                 ),
                               ),
-                            )
-                          : isReady
-                              ? _buildVideoSurface(ctrl)
-                              : const Center(
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      CircularProgressIndicator(color: Color(0xFF00E5FF)),
-                                      SizedBox(height: 12),
-                                      Text(
-                                        'Carregando transmissão...',
-                                        style: TextStyle(color: Colors.white70, fontSize: 13),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                    ),
                   ),
 
-                  // CAMADA 2: OVERLAY GESTOS (MÓVEL)
+                  // CAMADA 2: OVERLAY DE GESTOS NO CELULAR
                   if (_gestureOverlayText.isNotEmpty)
                     Center(
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
                         decoration: BoxDecoration(
                           color: Colors.black87,
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: BorderRadius.circular(14),
                           border: Border.all(color: const Color(0xFF00E5FF), width: 2),
                         ),
                         child: Text(
                           _gestureOverlayText,
                           style: const TextStyle(
-                            fontSize: 24,
+                            fontSize: 20,
                             fontWeight: FontWeight.w900,
                             color: Color(0xFF00E5FF),
                           ),
@@ -566,7 +602,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                       ),
                     ),
 
-                  // CAMADA 3: OSD (CONTROLES ESTILO NETFLIX)
+                  // CAMADA 3: OSD ESTILO NETFLIX (OCULTO QUANDO HÁ ERRO PARA NUNCA SOBREPOR)
                   if (showOsd && !_engine.hasError)
                     GestureDetector(
                       behavior: HitTestBehavior.translucent,
@@ -583,7 +619,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                               Colors.black45,
                               Colors.black87,
                             ],
-                            stops: [0.0, 0.2, 0.5, 0.8, 1.0],
+                            stops: [0.0, 0.22, 0.5, 0.78, 1.0],
                           ),
                         ),
                         child: SafeArea(
@@ -597,7 +633,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                       ),
                     ),
 
-                  // CAMADA 4: MENU LATERAL (GAVETA DE CANAIS)
+                  // CAMADA 4: GAVETA LATERAL DE CANAIS / EPISÓDIOS
                   _buildSideDrawer(),
                 ],
               ),
@@ -619,17 +655,18 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     return Column(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        // BARRA SUPERIOR
+        // 1. BARRA SUPERIOR
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           child: Row(
             children: [
               TVIconButton(
                 icon: Icons.arrow_back_ios_new_rounded,
-                size: 24,
+                size: 22,
+                color: Colors.white,
                 onPressed: () => Navigator.pop(context),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -638,13 +675,15 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                       currentItem.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, letterSpacing: 0.5),
+                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
                     ),
                     const SizedBox(height: 2),
                     Text(
                       '${currentItem.group} • ${_engine.activeFormatLabel}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 12,
+                        fontSize: 11.5,
                         color: Color(0xFF00E5FF),
                         fontWeight: FontWeight.bold,
                       ),
@@ -654,6 +693,29 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
               ),
               buildQualityBadge(currentItem.qualityTag),
               const SizedBox(width: 10),
+              TVFocusableItem(
+                autoScroll: false,
+                onSelect: () {
+                  _engine.openStream(currentItem, forceReload: true, tryHlsFallback: true);
+                  _resetOsdTimer();
+                },
+                builder: (c, f) => Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: f ? const Color(0xFF00E5FF) : Colors.white12,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    'Modo Alt.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w900,
+                      color: f ? Colors.black : Colors.white,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
               TVFocusableItem(
                 autoScroll: false,
                 onSelect: _cycleScaleMode,
@@ -683,13 +745,14 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
           ),
         ),
 
-        // CONTROLES CENTRAIS
+        // 2. CONTROLES CENTRAIS GIGANTES
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             TVIconButton(
               icon: isVod ? Icons.replay_10_rounded : Icons.skip_previous_rounded,
-              size: 46,
+              size: 40,
+              color: Colors.white,
               onPressed: () {
                 if (isVod) {
                   _engine.seekRelative(-10);
@@ -699,40 +762,47 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                 _resetOsdTimer();
               },
             ),
-            const SizedBox(width: 48),
+            const SizedBox(width: 42),
             TVFocusableItem(
               focusNode: _playPauseNode,
               autofocus: true,
               autoScroll: false,
               onSelect: _handlePlayPause,
               builder: (c, f) => AnimatedScale(
-                scale: f ? 1.1 : 1.0,
-                duration: const Duration(milliseconds: 150),
+                scale: f ? 1.12 : 1.0,
+                duration: const Duration(milliseconds: 130),
                 child: Container(
-                  padding: const EdgeInsets.all(18),
+                  padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
                     color: f ? const Color(0xFF00E5FF) : Colors.black54,
                     shape: BoxShape.circle,
-                    border: Border.all(color: const Color(0xFF00E5FF), width: 2.5),
+                    border: Border.all(
+                      color: f ? Colors.white : const Color(0xFF00E5FF),
+                      width: 2.5,
+                    ),
                   ),
                   child: isBuffering
-                      ? const SizedBox(
+                      ? SizedBox(
                           width: 44,
                           height: 44,
-                          child: CircularProgressIndicator(strokeWidth: 3, color: Color(0xFF00E5FF)),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 3,
+                            color: f ? Colors.black : const Color(0xFF00E5FF),
+                          ),
                         )
                       : Icon(
                           isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                          size: 58,
+                          size: 48,
                           color: f ? Colors.black : Colors.white,
                         ),
                 ),
               ),
             ),
-            const SizedBox(width: 48),
+            const SizedBox(width: 42),
             TVIconButton(
               icon: isVod ? Icons.forward_10_rounded : Icons.skip_next_rounded,
-              size: 46,
+              size: 40,
+              color: Colors.white,
               onPressed: () {
                 if (isVod) {
                   _engine.seekRelative(10);
@@ -745,97 +815,119 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
           ],
         ),
 
-        // BARRA INFERIOR
+        // 3. BARRA INFERIOR
         Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          padding: const EdgeInsets.fromLTRB(22, 0, 22, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: isVod
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Text(_formatDuration(position), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                              Text(_formatDuration(duration), style: const TextStyle(fontSize: 13, color: Colors.white70)),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                          SliderTheme(
-                            data: SliderTheme.of(context).copyWith(
-                              trackHeight: 4,
-                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                              activeTrackColor: const Color(0xFF00E5FF),
-                              inactiveTrackColor: Colors.white24,
-                              thumbColor: const Color(0xFF00E5FF),
-                            ),
-                            child: Slider(
-                              value: curSeconds,
-                              min: 0.0,
-                              max: maxSeconds,
-                              onChanged: (newVal) {
-                                _engine.controller?.seekTo(Duration(seconds: newVal.toInt()));
-                                _resetOsdTimer();
-                              },
-                            ),
-                          ),
-                        ],
-                      )
-                    : Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              const Icon(Icons.circle, color: Colors.redAccent, size: 10),
-                              const SizedBox(width: 6),
-                              const Text(
-                                'AO VIVO',
-                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1.5),
-                              ),
-                              if (_engine.currentEpg != null) ...[
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    '• ${_engine.currentEpg!.nowTitle}',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 13, color: Colors.white),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ],
+              if (isVod && val != null)
+                Row(
+                  children: [
+                    Text(
+                      _formatDuration(position),
+                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    Expanded(
+                      child: SliderTheme(
+                        data: SliderTheme.of(context).copyWith(
+                          trackHeight: 4,
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                          activeTrackColor: const Color(0xFF00E5FF),
+                          inactiveTrackColor: Colors.white24,
+                          thumbColor: const Color(0xFF00E5FF),
+                        ),
+                        child: Slider(
+                          value: curSeconds,
+                          min: 0.0,
+                          max: maxSeconds,
+                          onChanged: (newVal) {
+                            _engine.controller?.seekTo(Duration(seconds: newVal.toInt()));
+                            _resetOsdTimer();
+                          },
+                        ),
                       ),
-              ),
-              const SizedBox(width: 24),
-              TVFocusableItem(
-                autoScroll: false,
-                onSelect: () {
-                  setState(() => showDrawer = true);
-                  _hideTimer?.cancel();
-                },
-                builder: (c, f) => Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: f ? const Color(0xFF00E5FF) : Colors.white10,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: f ? Colors.white : Colors.transparent, width: 2),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.format_list_bulleted_rounded, size: 20, color: f ? Colors.black : Colors.white),
-                      const SizedBox(width: 8),
-                      Text(
-                        isVod ? 'Episódios' : 'Canais',
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: f ? Colors.black : Colors.white),
-                      ),
-                    ],
-                  ),
+                    ),
+                    Text(
+                      _formatDuration(duration),
+                      style: const TextStyle(fontSize: 12, color: Colors.white70),
+                    ),
+                  ],
                 ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  if (!isVod)
+                    Expanded(
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: Colors.redAccent,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: const Text(
+                              'AO VIVO',
+                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          if (_engine.currentEpg != null)
+                            Expanded(
+                              child: Text(
+                                '${_engine.currentEpg!.nowTitle}  •  ${_engine.currentEpg!.nextTitle}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 12.5, color: Colors.white70),
+                              ),
+                            ),
+                        ],
+                      ),
+                    )
+                  else
+                    const Text(
+                      'Use -10s / +10s ou a barra de tempo para avançar',
+                      style: TextStyle(fontSize: 11.5, color: Colors.white54),
+                    ),
+                  const SizedBox(width: 16),
+                  TVFocusableItem(
+                    autoScroll: false,
+                    onSelect: () {
+                      setState(() => showDrawer = true);
+                      _hideTimer?.cancel();
+                    },
+                    builder: (c, f) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: f ? const Color(0xFF00E5FF) : Colors.white12,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(
+                          color: f ? Colors.white : Colors.white24,
+                          width: f ? 2 : 1,
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.format_list_bulleted_rounded,
+                            size: 18,
+                            color: f ? Colors.black : Colors.white,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            isVod ? 'Episódios / Lista' : 'Lista de Canais',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.bold,
+                              color: f ? Colors.black : Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
