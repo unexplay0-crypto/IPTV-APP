@@ -42,7 +42,7 @@ class UnexHttpOverrides extends HttpOverrides {
 }
 
 // =============================================================================
-// 1. MODELOS DE DADOS (CANAIS, FILMES, SÉRIES, PROGRESSO E EPG)
+// 1. MODELOS DE DADOS (COM SUPORTE A UNIFICAÇÃO DUBLADO + LEGENDADO '(L)')
 // =============================================================================
 class StreamItem {
   final String id;
@@ -64,6 +64,12 @@ class StreamItem {
   final String year;
   final String cast;
 
+  // Campos para unificação de versão Legendada (L)
+  final String? subtitledUrl;
+  final String? subtitledStreamId;
+  final String? subtitledName;
+  final bool isSubtitledOnly;
+
   StreamItem({
     required this.id,
     required this.streamId,
@@ -83,21 +89,33 @@ class StreamItem {
     this.rating = 'N/A',
     this.year = '',
     this.cast = '',
+    this.subtitledUrl,
+    this.subtitledStreamId,
+    this.subtitledName,
+    this.isSubtitledOnly = false,
   });
 
+  bool get hasBothAudioOptions => subtitledUrl != null && subtitledUrl!.isNotEmpty;
+
   StreamItem copyWith({
+    String? name,
+    String? cleanName,
     String? synopsis,
     String? rating,
     String? year,
     String? cast,
     String? url,
+    String? subtitledUrl,
+    String? subtitledStreamId,
+    String? subtitledName,
+    bool? isSubtitledOnly,
   }) {
     return StreamItem(
       id: id,
       streamId: streamId,
       tvgId: tvgId,
-      name: name,
-      cleanName: cleanName,
+      name: name ?? this.name,
+      cleanName: cleanName ?? this.cleanName,
       seriesName: seriesName,
       seasonNumber: seasonNumber,
       episodeNumber: episodeNumber,
@@ -111,6 +129,10 @@ class StreamItem {
       rating: (rating != null && rating.trim().isNotEmpty) ? rating : this.rating,
       year: (year != null && year.trim().isNotEmpty) ? year : this.year,
       cast: (cast != null && cast.trim().isNotEmpty) ? cast : this.cast,
+      subtitledUrl: subtitledUrl ?? this.subtitledUrl,
+      subtitledStreamId: subtitledStreamId ?? this.subtitledStreamId,
+      subtitledName: subtitledName ?? this.subtitledName,
+      isSubtitledOnly: isSubtitledOnly ?? this.isSubtitledOnly,
     );
   }
 
@@ -133,6 +155,10 @@ class StreamItem {
         'rating': rating,
         'year': year,
         'cast': cast,
+        'subtitledUrl': subtitledUrl,
+        'subtitledStreamId': subtitledStreamId,
+        'subtitledName': subtitledName,
+        'isSubtitledOnly': isSubtitledOnly,
       };
 
   factory StreamItem.fromJson(Map<String, dynamic> json) {
@@ -155,6 +181,10 @@ class StreamItem {
       rating: json['rating']?.toString() ?? 'N/A',
       year: json['year']?.toString() ?? '',
       cast: json['cast']?.toString() ?? '',
+      subtitledUrl: json['subtitledUrl']?.toString(),
+      subtitledStreamId: json['subtitledStreamId']?.toString(),
+      subtitledName: json['subtitledName']?.toString(),
+      isSubtitledOnly: json['isSubtitledOnly'] == true,
     );
   }
 }
@@ -251,17 +281,130 @@ class SeriesGroup {
 }
 
 // =============================================================================
+// UNIFICADOR AUTOMÁTICO DE FILMES DUBLADOS E LEGENDADOS '(L)'
+// =============================================================================
+final RegExp _kSubtitledMarkerRegex = RegExp(
+  r'(\(\s*[lL]\s*\)|\[\s*[lL]\s*\]|\(\s*leg(?:endado)?\s*\)|\[\s*leg(?:endado)?\s*\]|\blegendado\b)',
+  caseSensitive: false,
+);
+
+final RegExp _kDubbedMarkerRegex = RegExp(
+  r'(\(\s*dub(?:lado)?\s*\)|\[\s*dub(?:lado)?\s*\]|\bdublado\b)',
+  caseSensitive: false,
+);
+
+final RegExp _kQualityStripRegex = RegExp(
+  r'\b(4K|UHD|FHD|1080P|HD|720P|SD|H265|HEVC)\b',
+  caseSensitive: false,
+);
+
+class _MovieLanguageBucket {
+  final List<StreamItem> dubbed = [];
+  final List<StreamItem> subtitled = [];
+}
+
+String _normalizeMovieTitleKey(String rawTitle) {
+  String s = rawTitle
+      .replaceAll(_kSubtitledMarkerRegex, ' ')
+      .replaceAll(_kDubbedMarkerRegex, ' ')
+      .replaceAll(_kQualityStripRegex, ' ')
+      .replaceAll(RegExp(r'[\[\]\(\)\-\|\:\._]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim()
+      .toLowerCase();
+  return s.isEmpty ? rawTitle.trim().toLowerCase() : s;
+}
+
+String _cleanSubtitledDisplayTitle(String rawTitle) {
+  final cleaned = rawTitle
+      .replaceAll(_kSubtitledMarkerRegex, '')
+      .replaceAll(_kDubbedMarkerRegex, '')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      .trim();
+  return cleaned.isEmpty ? rawTitle.trim() : cleaned;
+}
+
+List<StreamItem> unifyMoviesByLanguage(List<StreamItem> items) {
+  final List<StreamItem> nonMovies = [];
+  final Map<String, _MovieLanguageBucket> movieBuckets = {};
+  final List<String> keyOrder = [];
+
+  for (final item in items) {
+    if (item.type != ContentType.movie) {
+      nonMovies.add(item);
+      continue;
+    }
+
+    final isSub = _kSubtitledMarkerRegex.hasMatch(item.name) ||
+        item.group.toLowerCase().contains('legendado');
+    final normKey = _normalizeMovieTitleKey(item.name);
+
+    final bucket = movieBuckets.putIfAbsent(normKey, () {
+      keyOrder.add(normKey);
+      return _MovieLanguageBucket();
+    });
+
+    if (isSub) {
+      bucket.subtitled.add(item);
+    } else {
+      bucket.dubbed.add(item);
+    }
+  }
+
+  final List<StreamItem> unifiedMovies = [];
+
+  for (final key in keyOrder) {
+    final bucket = movieBuckets[key]!;
+    final int pairCount = bucket.dubbed.length < bucket.subtitled.length
+        ? bucket.dubbed.length
+        : bucket.subtitled.length;
+
+    // 1. Casa cada versão Dublada com sua versão Legendada (L) em um único item
+    for (int i = 0; i < pairCount; i++) {
+      final dub = bucket.dubbed[i];
+      final sub = bucket.subtitled[i];
+      final displayTitle = _cleanSubtitledDisplayTitle(dub.name);
+      unifiedMovies.add(
+        dub.copyWith(
+          name: displayTitle,
+          cleanName: displayTitle,
+          subtitledUrl: sub.url,
+          subtitledStreamId: sub.streamId,
+          subtitledName: sub.name,
+          isSubtitledOnly: false,
+        ),
+      );
+    }
+
+    // 2. Mantém versões apenas Dubladas restantes
+    for (int i = pairCount; i < bucket.dubbed.length; i++) {
+      unifiedMovies.add(bucket.dubbed[i]);
+    }
+
+    // 3. Mantém versões apenas Legendadas (L) que não possuem par dublado
+    for (int i = pairCount; i < bucket.subtitled.length; i++) {
+      final subOnly = bucket.subtitled[i];
+      unifiedMovies.add(
+        subOnly.copyWith(isSubtitledOnly: true),
+      );
+    }
+  }
+
+  return [...nonMovies, ...unifiedMovies];
+}
+
+// =============================================================================
 // 2. ARMAZENAMENTO OFFLINE-FIRST E PERSISTÊNCIA EM DISCO
 // =============================================================================
 class AppStorage {
   static String get _tmp => Directory.systemTemp.path;
-  static File get _sessionFile => File('$_tmp/unex_v22_session.json');
-  static File get _deviceFile => File('$_tmp/unex_v22_device.json');
-  static File get _vodProgressFile => File('$_tmp/unex_v22_vod_progress.json');
-  static File get _favoritesFile => File('$_tmp/unex_v22_favorites.json');
-  static File get _recentsFile => File('$_tmp/unex_v22_recents.json');
-  static File get _offlinePlaylistFile => File('$_tmp/unex_v22_offline_playlist.json');
-  static File get _parentalPinFile => File('$_tmp/unex_v22_parental_pin.txt');
+  static File get _sessionFile => File('$_tmp/unex_v23_session.json');
+  static File get _deviceFile => File('$_tmp/unex_v23_device.json');
+  static File get _vodProgressFile => File('$_tmp/unex_v23_vod_progress.json');
+  static File get _favoritesFile => File('$_tmp/unex_v23_favorites.json');
+  static File get _recentsFile => File('$_tmp/unex_v23_recents.json');
+  static File get _offlinePlaylistFile => File('$_tmp/unex_v23_offline_playlist.json');
+  static File get _parentalPinFile => File('$_tmp/unex_v23_parental_pin.txt');
 
   static Future<DeviceMode> getOrDetectDeviceMode() async {
     try {
@@ -418,7 +561,7 @@ List<StreamItem> _decodePlaylistIsolate(String raw) =>
     (jsonDecode(raw) as List).map((e) => StreamItem.fromJson(e)).toList();
 
 // =============================================================================
-// 3. MOTOR DE VÍDEO COMPARTILHADO (SURFACEVIEW NATIVA + TEXTURE FALLBACK)
+// 3. MOTOR DE VÍDEO COMPARTILHADO (BLINDADO — INALTERADO)
 // =============================================================================
 class _StreamAttempt {
   final String url;
@@ -526,7 +669,6 @@ class SharedStreamEngine extends ChangeNotifier {
       }
 
       if (!preferAlternate) {
-        // 1. SurfaceView Nativa (platformView) com HLS (.m3u8) — Resolve o erro MediaCodec nas Smart TVs TCL
         list.add(_StreamAttempt(
           url: m3u8Url,
           formatHint: null,
@@ -534,7 +676,6 @@ class SharedStreamEngine extends ChangeNotifier {
           label: 'TV-SURFACE (HLS)',
           viewType: VideoViewType.platformView,
         ));
-        // 2. SurfaceView Nativa (platformView) com MPEG-TS (.ts) + Redirecionamento 302
         list.add(_StreamAttempt(
           url: tsUrl,
           formatHint: null,
@@ -543,7 +684,6 @@ class SharedStreamEngine extends ChangeNotifier {
           resolveRedirectFirst: true,
           viewType: VideoViewType.platformView,
         ));
-        // 3. TextureView com HLS Forçado
         list.add(_StreamAttempt(
           url: m3u8Url,
           formatHint: VideoFormat.hls,
@@ -552,7 +692,6 @@ class SharedStreamEngine extends ChangeNotifier {
           resolveRedirectFirst: true,
           viewType: VideoViewType.textureView,
         ));
-        // 4. TextureView com MPEG-TS
         list.add(_StreamAttempt(
           url: tsUrl,
           formatHint: null,
@@ -586,9 +725,7 @@ class SharedStreamEngine extends ChangeNotifier {
         ));
       }
     } else {
-      // Filmes e Séries (VOD)
       if (!preferAlternate) {
-        // 1. SurfaceView Nativa (platformView) — Evita o crash de ImageReader/ColorInfo nas TVs TCL
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
@@ -596,7 +733,6 @@ class SharedStreamEngine extends ChangeNotifier {
           label: 'VOD-SURFACE',
           viewType: VideoViewType.platformView,
         ));
-        // 2. SurfaceView Nativa com resolução de redirecionamento 302 e User-Agent VLC
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
@@ -605,16 +741,14 @@ class SharedStreamEngine extends ChangeNotifier {
           resolveRedirectFirst: true,
           viewType: VideoViewType.platformView,
         ));
-        // 3. Fallback em TextureView
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
           headers: kIptvHeaders,
           label: 'VOD-TEXTURE',
-           resolveRedirectFirst: true,
+          resolveRedirectFirst: true,
           viewType: VideoViewType.textureView,
         ));
-        // 4. Sem cabeçalhos customizados em SurfaceView
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
@@ -652,6 +786,7 @@ class SharedStreamEngine extends ChangeNotifier {
   }) async {
     if (!forceReload &&
         currentItem?.id == item.id &&
+        currentItem?.url == item.url &&
         controller != null &&
         isReady &&
         !hasError) {
@@ -683,7 +818,6 @@ class SharedStreamEngine extends ChangeNotifier {
 
     _fetchMockEpg(item);
 
-    // Libera 100% do decoder de hardware da TV com margem de 450ms para o firmware da TV resetar o MediaCodec
     if (oldController != null) {
       try {
         await oldController.pause();
@@ -731,7 +865,6 @@ class SharedStreamEngine extends ChangeNotifier {
         await testCtrl.setVolume(1.0);
         await testCtrl.play();
 
-        // Verifica durante 400ms se o MediaCodecVideoRenderer não disparou erro assíncrono logo após o play()
         await Future.delayed(const Duration(milliseconds: 400));
         if (myOp != _opId) {
           await testCtrl.dispose().catchError((_) {});
@@ -748,7 +881,6 @@ class SharedStreamEngine extends ChangeNotifier {
         isRecovering = false;
         lastErrorDetails = '';
 
-        // Monitora erros tardios do MediaCodec durante a reprodução
         testCtrl.addListener(() {
           if (controller == testCtrl && testCtrl.value.hasError && !hasError) {
             lastErrorDetails = testCtrl.value.errorDescription ?? 'Erro de decodificação de vídeo';
@@ -879,7 +1011,6 @@ class SharedStreamEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Para imediatamente qualquer vídeo ativo e libera o MediaCodec e a conexão no servidor IPTV
   Future<void> stopAndClear() async {
     _opId++;
     _saveCurrentVodProgressImmediately();
@@ -904,7 +1035,7 @@ class SharedStreamEngine extends ChangeNotifier {
 }
 
 // =============================================================================
-// 4. SERVIÇO DE CATÁLOGO XTREAM CODES API (COM LEITURA DE SERVER_INFO) + M3U
+// 4. SERVIÇO DE CATÁLOGO XTREAM CODES API + M3U (COM UNIFICAÇÃO DE '(L)')
 // =============================================================================
 class CatalogBundle {
   final List<StreamItem> allItems;
@@ -1197,7 +1328,7 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
         .replaceAll('720P', 'HD');
   }
 
-  final List<StreamItem> allItems = [];
+  final List<StreamItem> rawItems = [];
   final List<SeriesGroup> seriesGroups = [];
 
   try {
@@ -1208,7 +1339,7 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
         if (sid.isEmpty) continue;
         final name = s['name']?.toString() ?? 'Canal $sid';
         final group = liveCatMap[s['category_id']?.toString() ?? ''] ?? 'Canais';
-        allItems.add(
+        rawItems.add(
           StreamItem(
             id: 'live_$sid',
             streamId: sid,
@@ -1241,7 +1372,7 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
         var ext = v['container_extension']?.toString().replaceAll('.', '').trim() ?? 'mp4';
         if (ext.isEmpty) ext = 'mp4';
         final rating = v['rating']?.toString() ?? '8.2';
-        allItems.add(
+        rawItems.add(
           StreamItem(
             id: 'vod_$sid',
             streamId: sid,
@@ -1298,15 +1429,18 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
     }
   } catch (_) {}
 
+  // Unifica automaticamente filmes Dublados e Legendados (L)
+  final unifiedItems = unifyMoviesByLanguage(rawItems);
+
   return CatalogBundle(
-    allItems: allItems,
+    allItems: unifiedItems,
     seriesGroups: seriesGroups,
     resolvedStreamBaseUrl: dns,
   );
 }
 
 // =============================================================================
-// 5. PARSER M3U EM BACKGROUND (FALLBACK PARA LINKS M3U ESTÁTICOS)
+// 5. PARSER M3U EM BACKGROUND (COM UNIFICAÇÃO DE FILMES DUBLADOS / LEGENDADOS)
 // =============================================================================
 List<StreamItem> parseM3UAdvanced(String raw) {
   final List<StreamItem> result = [];
@@ -1403,7 +1537,8 @@ List<StreamItem> parseM3UAdvanced(String raw) {
       tvgId = '';
     }
   }
-  return result;
+
+  return unifyMoviesByLanguage(result);
 }
 
 List<SeriesGroup> groupSeriesItems(List<StreamItem> items) {
@@ -1448,18 +1583,71 @@ Future<void> applyDeviceOrientation(DeviceMode mode) async {
   }
 }
 
+// =============================================================================
+// 6. TRANSIÇÕES DE NAVEGAÇÃO FLUIDAS E EXPANSÃO DO PLAYER
+// =============================================================================
 Route<T> createSmoothRoute<T>(Widget page) {
   return PageRouteBuilder<T>(
-    transitionDuration: const Duration(milliseconds: 220),
-    reverseTransitionDuration: const Duration(milliseconds: 180),
+    transitionDuration: const Duration(milliseconds: 280),
+    reverseTransitionDuration: const Duration(milliseconds: 220),
     pageBuilder: (context, animation, secondaryAnimation) => page,
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
-      final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      );
       return FadeTransition(
         opacity: curved,
+        child: SlideTransition(
+          position: Tween<Offset>(
+            begin: const Offset(0.02, 0.0),
+            end: Offset.zero,
+          ).animate(curved),
+          child: ScaleTransition(
+            scale: Tween<double>(begin: 0.97, end: 1.0).animate(curved),
+            child: child,
+          ),
+        ),
+      );
+    },
+  );
+}
+
+/// Animação fluida de expansão da janela de pré-visualização até a Tela Cheia (e encolhimento ao voltar)
+Route<T> createPlayerExpandRoute<T>(Widget page, {required DeviceMode mode}) {
+  final originAlignment = mode == DeviceMode.tv
+      ? const Alignment(0.74, -0.24) // Ancorado na janela de pré-visualização à direita na TV
+      : const Alignment(0.0, -0.68); // Ancorado na pré-visualização superior no Celular
+
+  return PageRouteBuilder<T>(
+    transitionDuration: const Duration(milliseconds: 350),
+    reverseTransitionDuration: const Duration(milliseconds: 290),
+    pageBuilder: (context, animation, secondaryAnimation) => page,
+    transitionsBuilder: (context, animation, secondaryAnimation, child) {
+      final scaleCurve = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutQuart,
+        reverseCurve: Curves.easeInOutCubic,
+      );
+      final fadeCurve = CurvedAnimation(
+        parent: animation,
+        curve: const Interval(0.0, 0.75, curve: Curves.easeOut),
+        reverseCurve: const Interval(0.15, 1.0, curve: Curves.easeIn),
+      );
+
+      return FadeTransition(
+        opacity: fadeCurve,
         child: ScaleTransition(
-          scale: Tween<double>(begin: 0.98, end: 1.0).animate(curved),
-          child: child,
+          alignment: originAlignment,
+          scale: Tween<double>(begin: 0.30, end: 1.0).animate(scaleCurve),
+          child: ClipRRect(
+            borderRadius: Tween<BorderRadius>(
+              begin: BorderRadius.circular(18),
+              end: BorderRadius.zero,
+            ).evaluate(scaleCurve),
+            child: child,
+          ),
         ),
       );
     },
