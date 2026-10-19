@@ -459,45 +459,40 @@ class SharedStreamEngine extends ChangeNotifier {
 
   /// Segue redirecionamentos HTTP 301/302/307/308 de balanceadores IPTV sem baixar o corpo do vídeo
   Future<String> _resolveRedirectLocationOnly(String rawUrl, Map<String, String> headers) async {
-    HttpClient? client;
     try {
-      client = HttpClient()
-        ..connectionTimeout = const Duration(seconds: 5)
-        ..badCertificateCallback = (cert, host, port) => true;
-      if (headers['User-Agent'] != null) {
-        client.userAgent = headers['User-Agent'];
-      }
-
       Uri currentUri = Uri.parse(rawUrl);
       for (int hop = 0; hop < 4; hop++) {
-        final req = await client.getUrl(currentUri).timeout(const Duration(seconds: 5));
-        req.followRedirects = false;
-        headers.forEach((k, v) => req.headers.set(k, v));
+        final HttpClient hopClient = HttpClient()
+          ..connectionTimeout = const Duration(seconds: 5)
+          ..badCertificateCallback = (cert, host, port) => true;
 
-        final res = await req.close().timeout(const Duration(seconds: 5));
-        final code = res.statusCode;
-
-        if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
-          final loc = res.headers.value(HttpHeaders.locationHeader);
-          // Fecha o socket do painel imediatamente após ler o cabeçalho Location
-          client.close(force: true);
-          client = HttpClient()
-            ..connectionTimeout = const Duration(seconds: 5)
-            ..badCertificateCallback = (cert, host, port) => true;
-          if (loc != null && loc.isNotEmpty) {
-            currentUri = currentUri.resolve(loc);
-            continue;
+        try {
+          if (headers['User-Agent'] != null) {
+            hopClient.userAgent = headers['User-Agent'];
           }
+
+          final req = await hopClient.getUrl(currentUri).timeout(const Duration(seconds: 5));
+          req.followRedirects = false;
+          headers.forEach((k, v) => req.headers.set(k, v));
+
+          final res = await req.close().timeout(const Duration(seconds: 5));
+          final code = res.statusCode;
+
+          if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+            final loc = res.headers.value(HttpHeaders.locationHeader);
+            if (loc != null && loc.isNotEmpty) {
+              currentUri = currentUri.resolve(loc);
+              continue;
+            }
+          }
+          break;
+        } finally {
+          hopClient.close(force: true);
         }
-        // Fecha imediatamente para não consumir conexão no servidor de mídia
-        client.close(force: true);
-        break;
       }
       return currentUri.toString();
     } catch (_) {
       return rawUrl;
-    } finally {
-      client?.close(force: true);
     }
   }
 
@@ -519,13 +514,12 @@ class SharedStreamEngine extends ChangeNotifier {
         m3u8Url = '$raw.m3u8';
       }
 
-      // Formato curto estilo XCIPTV (sem /live/ no caminho) caso o servidor use rota direta
       if (tsUrl.contains('/live/')) {
         shortTsUrl = tsUrl.replaceFirst('/live/', '/');
       }
 
       if (!preferAlternate) {
-        // 1. HLS (.m3u8) com auto-detecção (Padrão mais estável para ExoPlayer em Smart TVs)
+        // 1. HLS (.m3u8) com auto-detecção
         list.add(_StreamAttempt(
           url: m3u8Url,
           formatHint: null,
@@ -558,7 +552,6 @@ class SharedStreamEngine extends ChangeNotifier {
           ));
         }
       } else {
-        // Ordem invertida quando o usuário clica em "Alternar Formato (TS/HLS)"
         list.add(_StreamAttempt(
           url: tsUrl,
           formatHint: null,
@@ -583,14 +576,12 @@ class SharedStreamEngine extends ChangeNotifier {
     } else {
       // Filmes e Séries (VOD)
       if (!preferAlternate) {
-        // 1. Conexão direta padrão Smarters
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
           headers: kIptvHeaders,
           label: 'VOD-DIRETO',
         ));
-        // 2. Resolução de redirecionamento 302 (Balanceador VOD) + User-Agent VLC
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
@@ -598,7 +589,6 @@ class SharedStreamEngine extends ChangeNotifier {
           label: 'VOD-302',
           resolveRedirectFirst: true,
         ));
-        // 3. Sem cabeçalhos customizados
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
@@ -932,7 +922,6 @@ class XtreamCatalogService {
       final baseApi =
           '$dns/player_api.php?username=${Uri.encodeComponent(user)}&password=${Uri.encodeComponent(pass)}';
 
-      // 1. Consulta server_info para descobrir a URL/Porta oficial de streaming caso o DNS não tenha porta explícita
       String effectiveDns = dns;
       try {
         final infoRes = await http.get(Uri.parse(baseApi), headers: kIptvHeaders).timeout(const Duration(seconds: 8));
@@ -1155,7 +1144,6 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
   final List<StreamItem> allItems = [];
   final List<SeriesGroup> seriesGroups = [];
 
-  // 1. Canais Ao Vivo
   try {
     final liveList = jsonDecode(payload['liveStreams'] ?? '[]');
     if (liveList is List) {
@@ -1186,7 +1174,6 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
     }
   } catch (_) {}
 
-  // 2. Filmes (VOD) com extensão higienizada
   try {
     final vodList = jsonDecode(payload['vodStreams'] ?? '[]');
     if (vodList is List) {
@@ -1221,7 +1208,6 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
     }
   } catch (_) {}
 
-  // 3. Séries
   try {
     final sList = jsonDecode(payload['seriesList'] ?? '[]');
     if (sList is List) {
