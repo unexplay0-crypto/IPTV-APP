@@ -12,6 +12,16 @@ const Map<String, String> kIptvHeaders = {
   'Accept': '*/*',
 };
 
+const Map<String, String> kVlcHeaders = {
+  'User-Agent': 'VLC/3.0.20 LibVLC/3.0.20',
+  'Accept': '*/*',
+};
+
+const Map<String, String> kXciptvHeaders = {
+  'User-Agent': 'XCIPTV',
+  'Accept': '*/*',
+};
+
 const MethodChannel nativeChannel = MethodChannel('unex.vision/native');
 
 enum DeviceMode { mobile, tv }
@@ -245,13 +255,13 @@ class SeriesGroup {
 // =============================================================================
 class AppStorage {
   static String get _tmp => Directory.systemTemp.path;
-  static File get _sessionFile => File('$_tmp/unex_v20_session.json');
-  static File get _deviceFile => File('$_tmp/unex_v20_device.json');
-  static File get _vodProgressFile => File('$_tmp/unex_v20_vod_progress.json');
-  static File get _favoritesFile => File('$_tmp/unex_v20_favorites.json');
-  static File get _recentsFile => File('$_tmp/unex_v20_recents.json');
-  static File get _offlinePlaylistFile => File('$_tmp/unex_v20_offline_playlist.json');
-  static File get _parentalPinFile => File('$_tmp/unex_v20_parental_pin.txt');
+  static File get _sessionFile => File('$_tmp/unex_v21_session.json');
+  static File get _deviceFile => File('$_tmp/unex_v21_device.json');
+  static File get _vodProgressFile => File('$_tmp/unex_v21_vod_progress.json');
+  static File get _favoritesFile => File('$_tmp/unex_v21_favorites.json');
+  static File get _recentsFile => File('$_tmp/unex_v21_recents.json');
+  static File get _offlinePlaylistFile => File('$_tmp/unex_v21_offline_playlist.json');
+  static File get _parentalPinFile => File('$_tmp/unex_v21_parental_pin.txt');
 
   static Future<DeviceMode> getOrDetectDeviceMode() async {
     try {
@@ -408,19 +418,21 @@ List<StreamItem> _decodePlaylistIsolate(String raw) =>
     (jsonDecode(raw) as List).map((e) => StreamItem.fromJson(e)).toList();
 
 // =============================================================================
-// 3. MOTOR DE VÍDEO COMPARTILHADO 2.0 (SEM CONEXÃO DUPLA + MULTI-FORMATO TV)
+// 3. MOTOR DE VÍDEO COMPARTILHADO (PADRÃO XCIPTV / IPTV SMARTERS)
 // =============================================================================
 class _StreamAttempt {
   final String url;
   final VideoFormat? formatHint;
   final Map<String, String> headers;
   final String label;
+  final bool resolveRedirectFirst;
 
   const _StreamAttempt({
     required this.url,
     this.formatHint,
     required this.headers,
     required this.label,
+    this.resolveRedirectFirst = false,
   });
 }
 
@@ -436,6 +448,7 @@ class SharedStreamEngine extends ChangeNotifier {
   bool hasError = false;
   bool isRecovering = false;
   String activeFormatLabel = 'AUTO';
+  String lastErrorDetails = '';
 
   int _opId = 0;
   Timer? _watchdogTimer;
@@ -444,6 +457,50 @@ class SharedStreamEngine extends ChangeNotifier {
 
   void Function(VodProgressEntry entry)? onVodProgressSaved;
 
+  /// Segue redirecionamentos HTTP 301/302/307/308 de balanceadores IPTV sem baixar o corpo do vídeo
+  Future<String> _resolveRedirectLocationOnly(String rawUrl, Map<String, String> headers) async {
+    HttpClient? client;
+    try {
+      client = HttpClient()
+        ..connectionTimeout = const Duration(seconds: 5)
+        ..badCertificateCallback = (cert, host, port) => true;
+      if (headers['User-Agent'] != null) {
+        client.userAgent = headers['User-Agent'];
+      }
+
+      Uri currentUri = Uri.parse(rawUrl);
+      for (int hop = 0; hop < 4; hop++) {
+        final req = await client.getUrl(currentUri).timeout(const Duration(seconds: 5));
+        req.followRedirects = false;
+        headers.forEach((k, v) => req.headers.set(k, v));
+
+        final res = await req.close().timeout(const Duration(seconds: 5));
+        final code = res.statusCode;
+
+        if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+          final loc = res.headers.value(HttpHeaders.locationHeader);
+          // Fecha o socket do painel imediatamente após ler o cabeçalho Location
+          client.close(force: true);
+          client = HttpClient()
+            ..connectionTimeout = const Duration(seconds: 5)
+            ..badCertificateCallback = (cert, host, port) => true;
+          if (loc != null && loc.isNotEmpty) {
+            currentUri = currentUri.resolve(loc);
+            continue;
+          }
+        }
+        // Fecha imediatamente para não consumir conexão no servidor de mídia
+        client.close(force: true);
+        break;
+      }
+      return currentUri.toString();
+    } catch (_) {
+      return rawUrl;
+    } finally {
+      client?.close(force: true);
+    }
+  }
+
   List<_StreamAttempt> _buildAttempts(StreamItem item, {required bool preferAlternate}) {
     final raw = item.url.trim();
     final List<_StreamAttempt> list = [];
@@ -451,6 +508,7 @@ class SharedStreamEngine extends ChangeNotifier {
     if (item.type == ContentType.live) {
       String tsUrl = raw;
       String m3u8Url = raw;
+      String shortTsUrl = raw;
 
       if (raw.endsWith('.ts')) {
         m3u8Url = '${raw.substring(0, raw.length - 3)}.m3u8';
@@ -461,25 +519,107 @@ class SharedStreamEngine extends ChangeNotifier {
         m3u8Url = '$raw.m3u8';
       }
 
+      // Formato curto estilo XCIPTV (sem /live/ no caminho) caso o servidor use rota direta
+      if (tsUrl.contains('/live/')) {
+        shortTsUrl = tsUrl.replaceFirst('/live/', '/');
+      }
+
       if (!preferAlternate) {
-        // 1. Tenta URL original com detecção automática nativa do ExoPlayer
-        list.add(_StreamAttempt(url: raw, formatHint: null, headers: kIptvHeaders, label: 'AUTO'));
-        // 2. Tenta variante HLS (.m3u8) com dica explícita HLS
-        list.add(_StreamAttempt(url: m3u8Url, formatHint: VideoFormat.hls, headers: kIptvHeaders, label: 'HLS'));
-        // 3. Tenta variante MPEG-TS (.ts) sem cabeçalho restritivo
-        if (tsUrl != raw) {
-          list.add(_StreamAttempt(url: tsUrl, formatHint: null, headers: const {}, label: 'MPEG-TS'));
+        // 1. HLS (.m3u8) com auto-detecção (Padrão mais estável para ExoPlayer em Smart TVs)
+        list.add(_StreamAttempt(
+          url: m3u8Url,
+          formatHint: null,
+          headers: kIptvHeaders,
+          label: 'HLS-AUTO',
+        ));
+        // 2. MPEG-TS (.ts) com resolução de redirecionamento 302 e User-Agent VLC
+        list.add(_StreamAttempt(
+          url: tsUrl,
+          formatHint: null,
+          headers: kVlcHeaders,
+          label: 'MPEG-TS',
+          resolveRedirectFirst: true,
+        ));
+        // 3. HLS com dica explícita VideoFormat.hls e User-Agent XCIPTV
+        list.add(_StreamAttempt(
+          url: m3u8Url,
+          formatHint: VideoFormat.hls,
+          headers: kXciptvHeaders,
+          label: 'HLS-FORÇADO',
+          resolveRedirectFirst: true,
+        ));
+        // 4. Rota curta sem /live/
+        if (shortTsUrl != tsUrl) {
+          list.add(_StreamAttempt(
+            url: shortTsUrl,
+            formatHint: null,
+            headers: kIptvHeaders,
+            label: 'DIRETO',
+          ));
         }
       } else {
-        // Modo alternativo (quando o usuário clica em "Tentar Novamente" ou "Trocar Formato")
-        list.add(_StreamAttempt(url: m3u8Url, formatHint: VideoFormat.hls, headers: kIptvHeaders, label: 'HLS'));
-        list.add(_StreamAttempt(url: tsUrl, formatHint: null, headers: kIptvHeaders, label: 'MPEG-TS'));
-        list.add(_StreamAttempt(url: raw, formatHint: null, headers: const {}, label: 'DIRETO'));
+        // Ordem invertida quando o usuário clica em "Alternar Formato (TS/HLS)"
+        list.add(_StreamAttempt(
+          url: tsUrl,
+          formatHint: null,
+          headers: kVlcHeaders,
+          label: 'MPEG-TS',
+          resolveRedirectFirst: true,
+        ));
+        list.add(_StreamAttempt(
+          url: m3u8Url,
+          formatHint: VideoFormat.hls,
+          headers: kIptvHeaders,
+          label: 'HLS',
+          resolveRedirectFirst: true,
+        ));
+        list.add(_StreamAttempt(
+          url: raw,
+          formatHint: null,
+          headers: const {},
+          label: 'NATIVO',
+        ));
       }
     } else {
       // Filmes e Séries (VOD)
-      list.add(_StreamAttempt(url: raw, formatHint: null, headers: kIptvHeaders, label: 'VOD'));
-      list.add(_StreamAttempt(url: raw, formatHint: null, headers: const {}, label: 'VOD-DIRETO'));
+      if (!preferAlternate) {
+        // 1. Conexão direta padrão Smarters
+        list.add(_StreamAttempt(
+          url: raw,
+          formatHint: null,
+          headers: kIptvHeaders,
+          label: 'VOD-DIRETO',
+        ));
+        // 2. Resolução de redirecionamento 302 (Balanceador VOD) + User-Agent VLC
+        list.add(_StreamAttempt(
+          url: raw,
+          formatHint: null,
+          headers: kVlcHeaders,
+          label: 'VOD-302',
+          resolveRedirectFirst: true,
+        ));
+        // 3. Sem cabeçalhos customizados
+        list.add(_StreamAttempt(
+          url: raw,
+          formatHint: null,
+          headers: const {},
+          label: 'VOD-NATIVO',
+        ));
+      } else {
+        list.add(_StreamAttempt(
+          url: raw,
+          formatHint: null,
+          headers: kVlcHeaders,
+          label: 'VOD-302',
+          resolveRedirectFirst: true,
+        ));
+        list.add(_StreamAttempt(
+          url: raw,
+          formatHint: null,
+          headers: const {},
+          label: 'VOD-NATIVO',
+        ));
+      }
     }
 
     return list;
@@ -515,6 +655,7 @@ class SharedStreamEngine extends ChangeNotifier {
     isReady = false;
     hasError = false;
     isRecovering = false;
+    lastErrorDetails = '';
 
     final oldController = controller;
     controller = null;
@@ -522,7 +663,7 @@ class SharedStreamEngine extends ChangeNotifier {
 
     _fetchMockEpg(item);
 
-    // Libera completamente o decoder de hardware da TV antes de abrir uma nova conexão no servidor IPTV
+    // Libera 100% do decoder de hardware e da conexão anterior antes de abrir o novo stream
     if (oldController != null) {
       try {
         await oldController.pause();
@@ -530,7 +671,7 @@ class SharedStreamEngine extends ChangeNotifier {
       try {
         await oldController.dispose();
       } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 220));
+      await Future.delayed(const Duration(milliseconds: 250));
     }
 
     if (myOp != _opId) return;
@@ -540,14 +681,21 @@ class SharedStreamEngine extends ChangeNotifier {
     for (final attempt in attempts) {
       if (myOp != _opId) return;
 
+      String targetUrl = attempt.url;
+      if (attempt.resolveRedirectFirst) {
+        targetUrl = await _resolveRedirectLocationOnly(targetUrl, attempt.headers);
+        if (myOp != _opId) return;
+      }
+
       final testCtrl = VideoPlayerController.networkUrl(
-        Uri.parse(attempt.url),
+        Uri.parse(targetUrl),
         httpHeaders: attempt.headers,
         formatHint: attempt.formatHint,
+        videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
 
       try {
-        await testCtrl.initialize().timeout(const Duration(seconds: 11));
+        await testCtrl.initialize().timeout(const Duration(seconds: 12));
         if (myOp != _opId) {
           await testCtrl.dispose().catchError((_) {});
           return;
@@ -568,13 +716,14 @@ class SharedStreamEngine extends ChangeNotifier {
         isReady = true;
         hasError = false;
         isRecovering = false;
+        lastErrorDetails = '';
         _startWatchdog();
         notifyListeners();
         return;
-      } catch (_) {
+      } catch (e) {
+        lastErrorDetails = e.toString().replaceAll('PlatformException', '').trim();
         await testCtrl.dispose().catchError((_) {});
         if (myOp != _opId) return;
-        // Pequena pausa para o servidor IPTV encerrar a tentativa anterior antes da próxima
         await Future.delayed(const Duration(milliseconds: 250));
       }
     }
@@ -684,6 +833,7 @@ class SharedStreamEngine extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Para imediatamente qualquer pré-visualização ativa e libera a conexão no servidor IPTV
   Future<void> stopAndClear() async {
     _opId++;
     _saveCurrentVodProgressImmediately();
@@ -691,23 +841,35 @@ class SharedStreamEngine extends ChangeNotifier {
     final old = controller;
     controller = null;
     currentItem = null;
+    currentEpg = null;
     isReady = false;
     hasError = false;
+    isRecovering = false;
     notifyListeners();
     if (old != null) {
-      await old.pause().catchError((_) {});
-      await old.dispose().catchError((_) {});
+      try {
+        await old.pause();
+      } catch (_) {}
+      try {
+        await old.dispose();
+      } catch (_) {}
     }
   }
 }
 
 // =============================================================================
-// 4. SERVIÇO DE CATÁLOGO XTREAM CODES API + METADADOS VOD + PARSER M3U
+// 4. SERVIÇO DE CATÁLOGO XTREAM CODES API (COM LEITURA DE SERVER_INFO) + M3U
 // =============================================================================
 class CatalogBundle {
   final List<StreamItem> allItems;
   final List<SeriesGroup> seriesGroups;
-  CatalogBundle({required this.allItems, required this.seriesGroups});
+  final String resolvedStreamBaseUrl;
+
+  CatalogBundle({
+    required this.allItems,
+    required this.seriesGroups,
+    required this.resolvedStreamBaseUrl,
+  });
 }
 
 class XtreamCatalogService {
@@ -770,6 +932,25 @@ class XtreamCatalogService {
       final baseApi =
           '$dns/player_api.php?username=${Uri.encodeComponent(user)}&password=${Uri.encodeComponent(pass)}';
 
+      // 1. Consulta server_info para descobrir a URL/Porta oficial de streaming caso o DNS não tenha porta explícita
+      String effectiveDns = dns;
+      try {
+        final infoRes = await http.get(Uri.parse(baseApi), headers: kIptvHeaders).timeout(const Duration(seconds: 8));
+        if (infoRes.statusCode == 200) {
+          final infoJson = jsonDecode(utf8.decode(infoRes.bodyBytes, allowMalformed: true));
+          final srv = infoJson['server_info'];
+          if (srv is Map) {
+            final srvUrl = srv['url']?.toString().trim() ?? '';
+            final srvPort = srv['port']?.toString().trim() ?? '';
+            final srvProto = srv['server_protocol']?.toString().trim() ?? 'http';
+            final inputUri = Uri.tryParse(dns);
+            if (inputUri != null && !inputUri.hasPort && srvUrl.isNotEmpty && srvPort.isNotEmpty && srvPort != '80' && srvPort != '443') {
+              effectiveDns = '$srvProto://${inputUri.host}:$srvPort';
+            }
+          }
+        }
+      } catch (_) {}
+
       final liveCatFuture = http
           .get(Uri.parse('$baseApi&action=get_live_categories'), headers: kIptvHeaders)
           .timeout(const Duration(seconds: 12));
@@ -807,7 +988,7 @@ class XtreamCatalogService {
       ]);
 
       return await compute(_parseXtreamJsonIsolate, {
-        'dns': dns,
+        'dns': effectiveDns,
         'user': user,
         'pass': pass,
         'liveCats': utf8.decode(liveCatRes.bodyBytes, allowMalformed: true),
@@ -822,7 +1003,6 @@ class XtreamCatalogService {
     }
   }
 
-  /// Busca Sinopse, Elenco, Ano e Avaliação de um Filme sob demanda via API Xtream
   static Future<StreamItem> fetchVodDetails({
     required StreamItem item,
     required String dns,
@@ -837,6 +1017,14 @@ class XtreamCatalogService {
       if (res.statusCode == 200) {
         final data = jsonDecode(utf8.decode(res.bodyBytes, allowMalformed: true));
         final info = data['info'];
+        final movieData = data['movie_data'];
+        String? updatedUrl;
+        if (movieData is Map) {
+          final rawExt = movieData['container_extension']?.toString().replaceAll('.', '').trim() ?? '';
+          if (rawExt.isNotEmpty) {
+            updatedUrl = '$dns/movie/$user/$pass/${item.streamId}.$rawExt';
+          }
+        }
         if (info is Map) {
           final plot = info['plot']?.toString() ?? info['description']?.toString() ?? '';
           final cast = info['cast']?.toString() ?? info['actors']?.toString() ?? '';
@@ -847,6 +1035,7 @@ class XtreamCatalogService {
             cast: cast,
             year: year,
             rating: rating,
+            url: updatedUrl,
           );
         }
       }
@@ -854,7 +1043,6 @@ class XtreamCatalogService {
     return item;
   }
 
-  /// Busca Temporadas e Episódios de uma Série sob demanda via API Xtream
   static Future<Map<int, List<StreamItem>>> fetchSeriesEpisodes({
     required SeriesGroup series,
     required String dns,
@@ -878,8 +1066,9 @@ class XtreamCatalogService {
             final sNum = int.tryParse(seasonKey.toString()) ?? 1;
             if (epList is List) {
               for (final ep in epList) {
-                final epId = ep['id']?.toString() ?? '';
-                final ext = ep['container_extension']?.toString() ?? 'mp4';
+                final epId = ep['id']?.toString().trim() ?? '';
+                var ext = ep['container_extension']?.toString().replaceAll('.', '').trim() ?? 'mp4';
+                if (ext.isEmpty) ext = 'mp4';
                 final epNum = int.tryParse(ep['episode_num']?.toString() ?? '1') ?? 1;
                 final epTitle = ep['title']?.toString() ?? 'Episódio $epNum';
                 if (epId.isNotEmpty) {
@@ -966,12 +1155,12 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
   final List<StreamItem> allItems = [];
   final List<SeriesGroup> seriesGroups = [];
 
-  // 1. Canais Ao Vivo (Usa .ts como base padrão Xtream e alterna p/ .m3u8 se necessário)
+  // 1. Canais Ao Vivo
   try {
     final liveList = jsonDecode(payload['liveStreams'] ?? '[]');
     if (liveList is List) {
       for (final s in liveList) {
-        final sid = s['stream_id']?.toString() ?? '';
+        final sid = s['stream_id']?.toString().trim() ?? '';
         if (sid.isEmpty) continue;
         final name = s['name']?.toString() ?? 'Canal $sid';
         final group = liveCatMap[s['category_id']?.toString() ?? ''] ?? 'Canais';
@@ -997,16 +1186,17 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
     }
   } catch (_) {}
 
-  // 2. Filmes (VOD)
+  // 2. Filmes (VOD) com extensão higienizada
   try {
     final vodList = jsonDecode(payload['vodStreams'] ?? '[]');
     if (vodList is List) {
       for (final v in vodList) {
-        final sid = v['stream_id']?.toString() ?? '';
+        final sid = v['stream_id']?.toString().trim() ?? '';
         if (sid.isEmpty) continue;
         final name = v['name']?.toString() ?? 'Filme $sid';
         final group = vodCatMap[v['category_id']?.toString() ?? ''] ?? 'Filmes';
-        final ext = v['container_extension']?.toString() ?? 'mp4';
+        var ext = v['container_extension']?.toString().replaceAll('.', '').trim() ?? 'mp4';
+        if (ext.isEmpty) ext = 'mp4';
         final rating = v['rating']?.toString() ?? '8.2';
         allItems.add(
           StreamItem(
@@ -1036,7 +1226,7 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
     final sList = jsonDecode(payload['seriesList'] ?? '[]');
     if (sList is List) {
       for (final sr in sList) {
-        final sid = sr['series_id']?.toString() ?? '';
+        final sid = sr['series_id']?.toString().trim() ?? '';
         if (sid.isEmpty) continue;
         final title = sr['name']?.toString() ?? 'Série $sid';
         final group = seriesCatMap[sr['category_id']?.toString() ?? ''] ?? 'Séries';
@@ -1066,7 +1256,11 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
     }
   } catch (_) {}
 
-  return CatalogBundle(allItems: allItems, seriesGroups: seriesGroups);
+  return CatalogBundle(
+    allItems: allItems,
+    seriesGroups: seriesGroups,
+    resolvedStreamBaseUrl: dns,
+  );
 }
 
 // =============================================================================
@@ -1104,7 +1298,8 @@ List<StreamItem> parseM3UAdvanced(String raw) {
       } else if (lowerUrl.contains('/movie/') ||
           lowerGroup.contains('filme') ||
           lowerUrl.endsWith('.mp4') ||
-          lowerUrl.endsWith('.mkv')) {
+          lowerUrl.endsWith('.mkv') ||
+          lowerUrl.endsWith('.avi')) {
         type = ContentType.movie;
       }
 
