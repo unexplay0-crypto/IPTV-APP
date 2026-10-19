@@ -73,7 +73,7 @@ jobs:
           </network-security-config>
           EOF
 
-      - name: Configurar AndroidManifest.xml (TV Leanback + Aceleracao de Hardware)
+      - name: Configurar AndroidManifest.xml (TV Leanback + Skia SurfaceTexture + LargeHeap)
         run: |
           cat << 'EOF' > android/app/src/main/AndroidManifest.xml
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -90,8 +90,14 @@ jobs:
                   android:icon="@mipmap/ic_launcher"
                   android:banner="@mipmap/ic_launcher"
                   android:hardwareAccelerated="true"
+                  android:largeHeap="true"
                   android:usesCleartextTraffic="true"
                   android:networkSecurityConfig="@xml/network_security_config">
+
+                  <!-- Desativa o Impeller para garantir compatibilidade total de video em Smart TVs e TV Boxes -->
+                  <meta-data
+                      android:name="io.flutter.embedding.android.EnableImpeller"
+                      android:value="false" />
 
                   <activity
                       android:name=".MainActivity"
@@ -107,9 +113,13 @@ jobs:
                           android:name="io.flutter.embedding.android.NormalTheme"
                           android:resource="@style/NormalTheme" />
 
+                      <meta-data
+                          android:name="io.flutter.embedding.android.EnableImpeller"
+                          android:value="false" />
+
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
-                          <category android:name="android.intent.category.LAUNCHER"/>
+                          <category android:name="android.intent.action.LAUNCHER"/>
                       </intent-filter>
 
                       <intent-filter>
