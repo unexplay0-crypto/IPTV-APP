@@ -13,7 +13,7 @@ import 'mobile_screen.dart';
 import 'tv_screen.dart';
 import 'player_screen.dart';
 
-const String kAppVersion = '2.1.0';
+const String kAppVersion = '2.2.0';
 const String kOtaCheckUrl = 'https://raw.githubusercontent.com/unexvision/ota/main/version.json';
 
 void main() {
@@ -577,9 +577,7 @@ class _LoginGatewayScreenState extends State<LoginGatewayScreen> {
 }
 
 // =============================================================================
-// 3. PAINEL PRINCIPAL 2.0
-// - Pré-visualização só inicia quando o usuário clica em um canal
-// - Pré-visualização é encerrada automaticamente ao ir para Filmes ou Séries
+// 3. PAINEL PRINCIPAL 2.0 (SUPERFÍCIE ÚNICA ISOLADA + PRÉ-VISUALIZAÇÃO SOB DEMANDA)
 // =============================================================================
 class MainDashboard extends StatefulWidget {
   final DeviceMode deviceMode;
@@ -705,7 +703,7 @@ class _MainDashboardState extends State<MainDashboard> {
     recentItems = await AppStorage.loadRecents();
     vodProgressMap = await AppStorage.loadVodProgressMap();
 
-    // 1. Abertura instantânea pelo cache local (< 1 segundo) SEM iniciar vídeo sozinho
+    // 1. Abertura instantânea pelo cache local (< 1 segundo) SEM auto-play
     final cached = await AppStorage.loadOfflinePlaylist();
     if (cached.isNotEmpty && mounted) {
       await _applyCatalog(cached, null);
@@ -818,7 +816,6 @@ class _MainDashboardState extends State<MainDashboard> {
       errorMessage = '';
       _rebuildCategories();
     });
-    // Nota: Nenhum canal inicia automaticamente aqui. A pré-visualização só começa no 1º clique do usuário!
   }
 
   Future<void> _checkOtaUpdateSilently() async {
@@ -976,20 +973,25 @@ class _MainDashboardState extends State<MainDashboard> {
   Future<void> _openFullScreen(StreamItem item, {List<StreamItem>? customList}) async {
     _recordRecent(item);
 
-    // Se vai abrir um Filme ou Série, garante que qualquer canal ao vivo anterior seja encerrado antes
-    if (item.type != ContentType.live && _engine.currentItem?.type == ContentType.live) {
+    // Se vai abrir um Filme ou Série, encerra imediatamente qualquer canal ao vivo anterior
+    if (item.type != ContentType.live && _engine.currentItem != null) {
       await _engine.stopAndClear();
     }
 
     Duration? startPos;
     final saved = vodProgressMap[item.id];
-    if (item.type != ContentType.live && saved != null && _engine.currentItem?.id != item.id) {
+    if (item.type != ContentType.live && saved != null) {
       if (!mounted) return;
       startPos = await showVodResumePrompt(context: context, entry: saved);
       if (startPos == null) return;
     }
+
+    // Desacopla a superfície do mini-player ANTES de abrir a rota de Tela Cheia
+    _engine.setFullScreenActive(true);
+    await Future.delayed(const Duration(milliseconds: 80));
+
     if (!mounted) return;
-    Navigator.push(
+    await Navigator.push(
       context,
       createSmoothRoute(
         SmartAdaptivePlayerScreen(
@@ -1000,13 +1002,17 @@ class _MainDashboardState extends State<MainDashboard> {
         ),
       ),
     );
+
+    if (mounted) {
+      _engine.setFullScreenActive(false);
+    }
   }
 
   void _handlePreviewOrPlay(StreamItem item) {
     _recordRecent(item);
-    // Se for Filme, para qualquer preview de canal ao vivo e abre a ficha técnica de Sinopse/Avaliação
+    // Se for Filme, para qualquer canal ao vivo e abre a ficha de Sinopse/Avaliação
     if (item.type == ContentType.movie) {
-      if (_engine.currentItem?.type == ContentType.live) {
+      if (_engine.currentItem != null) {
         _engine.stopAndClear();
       }
       _showVodMetadataSheet(item);
@@ -1254,7 +1260,7 @@ class _MainDashboardState extends State<MainDashboard> {
   // MODAL DE TEMPORADAS E EPISÓDIOS DE SÉRIES
   // ===========================================================================
   Future<void> _openSeriesEpisodesModal(SeriesGroup series) async {
-    if (_engine.currentItem?.type == ContentType.live) {
+    if (_engine.currentItem != null) {
       await _engine.stopAndClear();
     }
 
@@ -1488,9 +1494,16 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   // ===========================================================================
-  // JANELA DE PRÉ-VISUALIZAÇÃO 16:9 (MODO DE ESPERA LIMPO ATÉ O 1º CLIQUE)
+  // JANELA DE PRÉ-VISUALIZAÇÃO 16:9 (DESACOPLA QUANDO TELA CHEIA ESTÁ ATIVA)
   // ===========================================================================
   Widget _buildMiniVideo() {
+    // Se a Tela Cheia está aberta ou se não está na aba TV ao Vivo, não instancia VideoPlayer aqui!
+    if (_engine.isFullScreenActive || activeSection != MainSection.live) {
+      return const Center(
+        child: Icon(Icons.tv_rounded, color: Colors.white24, size: 30),
+      );
+    }
+
     if (_engine.currentItem == null) {
       return const Center(
         child: Padding(
@@ -1562,7 +1575,10 @@ class _MainDashboardState extends State<MainDashboard> {
     return Center(
       child: AspectRatio(
         aspectRatio: ratio,
-        child: VideoPlayer(c),
+        child: VideoPlayer(
+          c,
+          key: ValueKey('mini_${_engine.currentItem?.id}_${_engine.activeFormatLabel}'),
+        ),
       ),
     );
   }
@@ -1633,48 +1649,6 @@ class _MainDashboardState extends State<MainDashboard> {
   @override
   Widget build(BuildContext context) {
     final isTV = _mode == DeviceMode.tv;
-
-    final mobileView = MobileDashboardView(
-      scaffoldKey: _scaffoldKey,
-      activeSection: activeSection,
-      sectionTitle: _secTitle(activeSection),
-      selectedCategory: selectedCategory,
-      sectionCategories: sectionCategories,
-      categoryCounts: categoryCounts,
-      displayedItems: displayedItems,
-      displayedSeries: displayedSeries,
-      continueWatchingEntries: _sortedContinue,
-      vodProgressMap: vodProgressMap,
-      favoriteIds: favoriteIds,
-      activeItem: _engine.currentItem,
-      activeEpg: _engine.currentEpg,
-      miniVideoWidget: _buildMiniVideo(),
-      searchController: _searchCtrl,
-      searchQuery: searchQuery,
-      onSelectSection: _handleSectionChange,
-      onSelectCategory: (c) => setState(() {
-        selectedCategory = c;
-        _filterContent();
-      }),
-      onSearchChanged: (v) {
-        searchQuery = v;
-        _filterContent();
-      },
-      onClearSearch: () {
-        setState(() {
-          _searchCtrl.clear();
-          searchQuery = '';
-          _filterContent();
-        });
-      },
-      onStartPreview: _handlePreviewOrPlay,
-      onOpenFullScreen: _openFullScreen,
-      onSelectSeriesGroup: _openSeriesEpisodesModal,
-      onToggleFavorite: _toggleFavorite,
-      onRefreshPlaylist: _bootOfflineFirstAndSync,
-      onLogout: _logoutToLogin,
-      onSwitchToTVMode: () => _switchDeviceMode(DeviceMode.tv),
-    );
 
     return PopScope(
       canPop: false,
@@ -1883,7 +1857,47 @@ class _MainDashboardState extends State<MainDashboard> {
                           onSelectSeriesGroup: _openSeriesEpisodesModal,
                           onToggleFavorite: _toggleFavorite,
                         )
-                      : mobileView,
+                      : MobileDashboardView(
+                          scaffoldKey: _scaffoldKey,
+                          activeSection: activeSection,
+                          sectionTitle: _secTitle(activeSection),
+                          selectedCategory: selectedCategory,
+                          sectionCategories: sectionCategories,
+                          categoryCounts: categoryCounts,
+                          displayedItems: displayedItems,
+                          displayedSeries: displayedSeries,
+                          continueWatchingEntries: _sortedContinue,
+                          vodProgressMap: vodProgressMap,
+                          favoriteIds: favoriteIds,
+                          activeItem: _engine.currentItem,
+                          activeEpg: _engine.currentEpg,
+                          miniVideoWidget: _buildMiniVideo(),
+                          searchController: _searchCtrl,
+                          searchQuery: searchQuery,
+                          onSelectSection: _handleSectionChange,
+                          onSelectCategory: (c) => setState(() {
+                            selectedCategory = c;
+                            _filterContent();
+                          }),
+                          onSearchChanged: (v) {
+                            searchQuery = v;
+                            _filterContent();
+                          },
+                          onClearSearch: () {
+                            setState(() {
+                              _searchCtrl.clear();
+                              searchQuery = '';
+                              _filterContent();
+                            });
+                          },
+                          onStartPreview: _handlePreviewOrPlay,
+                          onOpenFullScreen: _openFullScreen,
+                          onSelectSeriesGroup: _openSeriesEpisodesModal,
+                          onToggleFavorite: _toggleFavorite,
+                          onRefreshPlaylist: _bootOfflineFirstAndSync,
+                          onLogout: _logoutToLogin,
+                          onSwitchToTVMode: () => _switchDeviceMode(DeviceMode.tv),
+                        ),
         ),
       ),
     );
