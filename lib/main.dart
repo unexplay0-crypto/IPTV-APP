@@ -13,7 +13,7 @@ import 'mobile_screen.dart';
 import 'tv_screen.dart';
 import 'player_screen.dart';
 
-const String kAppVersion = '2.0.0';
+const String kAppVersion = '2.1.0';
 const String kOtaCheckUrl = 'https://raw.githubusercontent.com/unexvision/ota/main/version.json';
 
 void main() {
@@ -57,7 +57,7 @@ class UnexVisionApp extends StatelessWidget {
 }
 
 // =============================================================================
-// 1. ROTEADOR DE BOOT (AUTO-DETECÇÃO DE DISPOSITIVO + SESSÃO VERIFICADA)
+// 1. ROTEADOR DE BOOT (AUTO-DETECÇÃO DE DISPOSITIVO + SESSÃO SALVA)
 // =============================================================================
 class BootRouterScreen extends StatefulWidget {
   const BootRouterScreen({super.key});
@@ -198,7 +198,6 @@ class _LoginGatewayScreenState extends State<LoginGatewayScreen> {
 
     final dns = XtreamCatalogService.cleanInputUrl(rawDns);
 
-    // Validação de status e vencimento na API Xtream Codes
     try {
       final uri = Uri.parse(
         '$dns/player_api.php?username=${Uri.encodeComponent(user)}&password=${Uri.encodeComponent(pass)}',
@@ -498,7 +497,6 @@ class _LoginGatewayScreenState extends State<LoginGatewayScreen> {
       );
     }
 
-    // Modo TV: usa exclusivamente o Teclado Virtual 2.0 (sem abrir o teclado do Android)
     return ValueListenableBuilder<TextEditingValue>(
       valueListenable: ctrl,
       builder: (context, val, _) {
@@ -579,7 +577,9 @@ class _LoginGatewayScreenState extends State<LoginGatewayScreen> {
 }
 
 // =============================================================================
-// 3. PAINEL PRINCIPAL 2.0 (OFFLINE-FIRST + XTREAM API + METADADOS + SÉRIES)
+// 3. PAINEL PRINCIPAL 2.0
+// - Pré-visualização só inicia quando o usuário clica em um canal
+// - Pré-visualização é encerrada automaticamente ao ir para Filmes ou Séries
 // =============================================================================
 class MainDashboard extends StatefulWidget {
   final DeviceMode deviceMode;
@@ -607,6 +607,7 @@ class _MainDashboardState extends State<MainDashboard> {
   final TextEditingController _searchCtrl = TextEditingController();
 
   late DeviceMode _mode;
+  late String _activeServerDns;
   bool isTVSideMenuOpen = false;
   bool isLoading = true;
   String loadingStatus = 'Conectando ao servidor...';
@@ -624,7 +625,7 @@ class _MainDashboardState extends State<MainDashboard> {
   String selectedCategory = 'Todas';
   String searchQuery = '';
 
-  String get _cleanDns => XtreamCatalogService.cleanInputUrl(widget.serverDns);
+  String get _cleanDns => XtreamCatalogService.cleanInputUrl(_activeServerDns);
 
   String get _m3uUrl {
     if (widget.directM3uUrl != null && widget.directM3uUrl!.isNotEmpty) {
@@ -642,7 +643,8 @@ class _MainDashboardState extends State<MainDashboard> {
   void initState() {
     super.initState();
     _mode = widget.deviceMode;
-    // Limite rigoroso de cache de imagens na RAM para evitar OutOfMemory em TV Boxes de 1GB/2GB
+    _activeServerDns = widget.serverDns;
+
     PaintingBinding.instance.imageCache.maximumSize = 120;
     PaintingBinding.instance.imageCache.maximumSizeBytes = 35 << 20;
 
@@ -679,6 +681,19 @@ class _MainDashboardState extends State<MainDashboard> {
     if (mounted) setState(() => _mode = targetMode);
   }
 
+  // Muda de seção e encerra imediatamente a pré-visualização ao sair de TV ao Vivo
+  void _handleSectionChange(MainSection newSection) {
+    if (newSection != MainSection.live) {
+      _engine.stopAndClear();
+    }
+    setState(() {
+      activeSection = newSection;
+      selectedCategory = 'Todas';
+      isTVSideMenuOpen = false;
+      _rebuildCategories();
+    });
+  }
+
   Future<void> _bootOfflineFirstAndSync() async {
     setState(() {
       isLoading = allItems.isEmpty;
@@ -690,15 +705,15 @@ class _MainDashboardState extends State<MainDashboard> {
     recentItems = await AppStorage.loadRecents();
     vodProgressMap = await AppStorage.loadVodProgressMap();
 
-    // 1. Abertura instantânea pelo cache local (< 1 segundo)
+    // 1. Abertura instantânea pelo cache local (< 1 segundo) SEM iniciar vídeo sozinho
     final cached = await AppStorage.loadOfflinePlaylist();
     if (cached.isNotEmpty && mounted) {
-      await _applyCatalog(cached, null, startFirstChannel: true);
+      await _applyCatalog(cached, null);
     }
 
     // 2. Prioridade 1: Carregamento rápido via Xtream Codes API JSON
     final creds = XtreamCatalogService.extractXtreamCredentials(
-      serverDns: widget.serverDns,
+      serverDns: _activeServerDns,
       username: widget.username,
       password: widget.password,
       directM3uUrl: widget.directM3uUrl,
@@ -712,18 +727,15 @@ class _MainDashboardState extends State<MainDashboard> {
       );
 
       if (bundle != null && bundle.allItems.isNotEmpty) {
+        _activeServerDns = bundle.resolvedStreamBaseUrl;
         await AppStorage.saveVerifiedSession({
-          'dns': creds['dns'],
+          'dns': _activeServerDns,
           'user': creds['user'],
           'pass': creds['pass'],
           'm3uUrl': widget.directM3uUrl,
         });
         if (mounted) {
-          await _applyCatalog(
-            bundle.allItems,
-            bundle.seriesGroups,
-            startFirstChannel: cached.isEmpty,
-          );
+          await _applyCatalog(bundle.allItems, bundle.seriesGroups);
         }
         Future.delayed(const Duration(seconds: 5), () {
           AppStorage.saveOfflinePlaylist(bundle.allItems);
@@ -743,13 +755,13 @@ class _MainDashboardState extends State<MainDashboard> {
         final parsed = await compute(parseM3UAdvanced, body);
         if (parsed.isNotEmpty) {
           await AppStorage.saveVerifiedSession({
-            'dns': widget.serverDns,
+            'dns': _activeServerDns,
             'user': widget.username,
             'pass': widget.password,
             'm3uUrl': widget.directM3uUrl,
           });
           if (mounted) {
-            await _applyCatalog(parsed, null, startFirstChannel: cached.isEmpty);
+            await _applyCatalog(parsed, null);
           }
           Future.delayed(const Duration(seconds: 5), () {
             AppStorage.saveOfflinePlaylist(parsed);
@@ -776,9 +788,8 @@ class _MainDashboardState extends State<MainDashboard> {
 
   Future<void> _applyCatalog(
     List<StreamItem> items,
-    List<SeriesGroup>? preGroupedSeries, {
-    required bool startFirstChannel,
-  }) async {
+    List<SeriesGroup>? preGroupedSeries,
+  ) async {
     final live = <StreamItem>[], movies = <StreamItem>[], series = <StreamItem>[];
     for (final i in items) {
       if (i.type == ContentType.live) {
@@ -807,15 +818,7 @@ class _MainDashboardState extends State<MainDashboard> {
       errorMessage = '';
       _rebuildCategories();
     });
-
-    if (startFirstChannel && _engine.currentItem == null && items.isNotEmpty) {
-      final safeRecent = recentItems.where((r) => !r.isAdult && r.type == ContentType.live).toList();
-      final safeLive = live.where((c) => !c.isAdult).toList();
-      final initial = safeRecent.isNotEmpty
-          ? safeRecent.first
-          : (safeLive.isNotEmpty ? safeLive.first : items.first);
-      _engine.openStream(initial);
-    }
+    // Nota: Nenhum canal inicia automaticamente aqui. A pré-visualização só começa no 1º clique do usuário!
   }
 
   Future<void> _checkOtaUpdateSilently() async {
@@ -972,9 +975,16 @@ class _MainDashboardState extends State<MainDashboard> {
 
   Future<void> _openFullScreen(StreamItem item, {List<StreamItem>? customList}) async {
     _recordRecent(item);
+
+    // Se vai abrir um Filme ou Série, garante que qualquer canal ao vivo anterior seja encerrado antes
+    if (item.type != ContentType.live && _engine.currentItem?.type == ContentType.live) {
+      await _engine.stopAndClear();
+    }
+
     Duration? startPos;
     final saved = vodProgressMap[item.id];
     if (item.type != ContentType.live && saved != null && _engine.currentItem?.id != item.id) {
+      if (!mounted) return;
       startPos = await showVodResumePrompt(context: context, entry: saved);
       if (startPos == null) return;
     }
@@ -994,12 +1004,15 @@ class _MainDashboardState extends State<MainDashboard> {
 
   void _handlePreviewOrPlay(StreamItem item) {
     _recordRecent(item);
-    // Para Filmes, exibe a Ficha de Sinopse, Elenco, Ano e Nota antes de reproduzir
+    // Se for Filme, para qualquer preview de canal ao vivo e abre a ficha técnica de Sinopse/Avaliação
     if (item.type == ContentType.movie) {
+      if (_engine.currentItem?.type == ContentType.live) {
+        _engine.stopAndClear();
+      }
       _showVodMetadataSheet(item);
       return;
     }
-    // Para Canais ao Vivo: se já está sintonizado no preview, abre Tela Cheia; senão, sintoniza no preview
+    // Se for Canal ao Vivo: 1º clique inicia a pré-visualização; 2º clique no mesmo canal abre Tela Cheia
     if (_engine.currentItem?.id == item.id) {
       _openFullScreen(item);
       return;
@@ -1015,7 +1028,7 @@ class _MainDashboardState extends State<MainDashboard> {
     bool fetchingInfo = true;
 
     final creds = XtreamCatalogService.extractXtreamCredentials(
-      serverDns: widget.serverDns,
+      serverDns: _activeServerDns,
       username: widget.username,
       password: widget.password,
       directM3uUrl: widget.directM3uUrl,
@@ -1238,19 +1251,24 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   // ===========================================================================
-  // MODAL COMPLETO DE TEMPORADAS E EPISÓDIOS DE SÉRIES
+  // MODAL DE TEMPORADAS E EPISÓDIOS DE SÉRIES
   // ===========================================================================
   Future<void> _openSeriesEpisodesModal(SeriesGroup series) async {
+    if (_engine.currentItem?.type == ContentType.live) {
+      await _engine.stopAndClear();
+    }
+
     Map<int, List<StreamItem>> seasonsMap = series.seasons;
 
     if (seasonsMap.isEmpty) {
       final creds = XtreamCatalogService.extractXtreamCredentials(
-        serverDns: widget.serverDns,
+        serverDns: _activeServerDns,
         username: widget.username,
         password: widget.password,
         directM3uUrl: widget.directM3uUrl,
       );
       if (creds != null) {
+        if (!mounted) return;
         showDialog(
           context: context,
           barrierDismissible: false,
@@ -1470,9 +1488,29 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   // ===========================================================================
-  // SUPERFÍCIE 16:9 DE PRÉ-VISUALIZAÇÃO (NUNCA NASCE COM TAMANHO 0x0 NA TV)
+  // JANELA DE PRÉ-VISUALIZAÇÃO 16:9 (MODO DE ESPERA LIMPO ATÉ O 1º CLIQUE)
   // ===========================================================================
   Widget _buildMiniVideo() {
+    if (_engine.currentItem == null) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(12.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.live_tv_rounded, color: Colors.white24, size: 32),
+              SizedBox(height: 8),
+              Text(
+                'Clique em um canal para pré-visualizar',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: Colors.white54),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (_engine.hasError) {
       return Center(
         child: Column(
@@ -1485,30 +1523,29 @@ class _MainDashboardState extends State<MainDashboard> {
               style: TextStyle(fontSize: 11, color: Colors.white54),
             ),
             const SizedBox(height: 6),
-            if (_engine.currentItem != null)
-              TVFocusableItem(
-                autoScroll: false,
-                onSelect: () => _engine.openStream(
-                  _engine.currentItem!,
-                  forceReload: true,
-                  tryHlsFallback: true,
+            TVFocusableItem(
+              autoScroll: false,
+              onSelect: () => _engine.openStream(
+                _engine.currentItem!,
+                forceReload: true,
+                tryHlsFallback: true,
+              ),
+              builder: (c, f) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: f ? Colors.white : const Color(0xFF00E5FF),
+                  borderRadius: BorderRadius.circular(6),
                 ),
-                builder: (c, f) => Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: f ? Colors.white : const Color(0xFF00E5FF),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: const Text(
-                    'Alternar TS / HLS',
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: Colors.black,
-                      fontWeight: FontWeight.bold,
-                    ),
+                child: const Text(
+                  'Alternar TS / HLS',
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.black,
+                    fontWeight: FontWeight.bold,
                   ),
                 ),
               ),
+            ),
           ],
         ),
       );
@@ -1614,11 +1651,7 @@ class _MainDashboardState extends State<MainDashboard> {
       miniVideoWidget: _buildMiniVideo(),
       searchController: _searchCtrl,
       searchQuery: searchQuery,
-      onSelectSection: (s) => setState(() {
-        activeSection = s;
-        selectedCategory = 'Todas';
-        _rebuildCategories();
-      }),
+      onSelectSection: _handleSectionChange,
       onSelectCategory: (c) => setState(() {
         selectedCategory = c;
         _filterContent();
@@ -1839,12 +1872,7 @@ class _MainDashboardState extends State<MainDashboard> {
                           },
                           onRefreshPlaylist: _bootOfflineFirstAndSync,
                           onLogout: _logoutToLogin,
-                          onSelectSection: (s) => setState(() {
-                            activeSection = s;
-                            selectedCategory = 'Todas';
-                            isTVSideMenuOpen = false;
-                            _rebuildCategories();
-                          }),
+                          onSelectSection: _handleSectionChange,
                           onSelectCategory: (c) => setState(() {
                             selectedCategory = c;
                             isTVSideMenuOpen = false;
@@ -1879,11 +1907,7 @@ class _MainDashboardState extends State<MainDashboard> {
       ),
       onTap: () {
         Navigator.pop(ctx);
-        setState(() {
-          activeSection = section;
-          selectedCategory = 'Todas';
-          _rebuildCategories();
-        });
+        _handleSectionChange(section);
       },
     );
   }
