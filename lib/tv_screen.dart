@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'core.dart';
 import 'widgets.dart';
@@ -72,7 +71,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   StreamItem? _focusedVodItem;
   SeriesGroup? _focusedSeriesGroup;
   bool _adultUnlocked = false;
-  Timer? _previewDebounce;
 
   final Color _bgColor = const Color(0xFF090B10);
   final Color _panelColor = const Color(0xFF111520);
@@ -82,7 +80,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
 
   @override
   void dispose() {
-    _previewDebounce?.cancel();
     _sideMenuFocus.dispose();
     super.dispose();
   }
@@ -92,19 +89,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _sideMenuFocus.canRequestFocus) {
         _sideMenuFocus.requestFocus();
-      }
-    });
-  }
-
-  // Debounce inteligente: só sintoniza no preview se o usuário parar o foco por 650ms
-  void _schedulePreviewOnFocus(StreamItem item) {
-    _previewDebounce?.cancel();
-    if (widget.activeItem?.id == item.id) return;
-    if (item.isAdult && !_adultUnlocked) return;
-
-    _previewDebounce = Timer(const Duration(milliseconds: 650), () {
-      if (mounted && widget.activeItem?.id != item.id) {
-        widget.onStartPreview(item);
       }
     });
   }
@@ -143,8 +127,8 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     widget.onSelectCategory(cat);
   }
 
+  // Pré-visualização só começa quando o usuário clica no canal (1º clique = Preview, 2º clique = Tela Cheia)
   Future<void> _handleChannelSelect(StreamItem item) async {
-    _previewDebounce?.cancel();
     if (item.isAdult && !_adultUnlocked) {
       final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
       if (!unlocked || !mounted) return;
@@ -158,8 +142,16 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     }
   }
 
+  Future<void> _handleVodSelect(StreamItem item) async {
+    if (item.isAdult && !_adultUnlocked) {
+      final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
+      if (!unlocked || !mounted) return;
+      setState(() => _adultUnlocked = true);
+    }
+    widget.onStartPreview(item);
+  }
+
   Future<void> _handleFullScreen(StreamItem item) async {
-    _previewDebounce?.cancel();
     if (item.isAdult && !_adultUnlocked) {
       final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
       if (!unlocked || !mounted) return;
@@ -216,6 +208,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   Widget _buildLiveTVLayout() {
     return Row(
       children: [
+        // COLUNA 1: CATEGORIAS
         Container(
           width: 235,
           color: _bgColor,
@@ -292,7 +285,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                       builder: (c, f) => AnimatedContainer(
                         duration: const Duration(milliseconds: 130),
                         margin: const EdgeInsets.symmetric(vertical: 3),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
                         decoration: BoxDecoration(
                           color: isSel
                               ? _accentColor.withOpacity(0.16)
@@ -344,6 +337,8 @@ class _TVDashboardViewState extends State<TVDashboardView> {
             ],
           ),
         ),
+
+        // COLUNA 2: GRADE DE CANAIS (SÓ INICIA PRÉ-VISUALIZAÇÃO QUANDO CLICAR COM OK)
         Expanded(
           child: Container(
             color: _panelColor.withOpacity(0.45),
@@ -371,92 +366,91 @@ class _TVDashboardViewState extends State<TVDashboardView> {
 
                       return TVFocusableItem(
                         onSelect: () => _handleChannelSelect(item),
-                        builder: (c, f) {
-                          if (f) _schedulePreviewOnFocus(item);
-                          return AnimatedScale(
-                            scale: f ? 1.04 : 1.0,
-                            duration: const Duration(milliseconds: 120),
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 130),
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: isPlaying ? _accentColor.withOpacity(0.15) : _cardColor,
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(
-                                  color: f
-                                      ? _accentColor
-                                      : isPlaying
-                                          ? _secondaryAccent
-                                          : Colors.white.withOpacity(0.06),
-                                  width: f ? 2.4 : 1.2,
-                                ),
-                                boxShadow: f
-                                    ? [
-                                        BoxShadow(
-                                          color: _accentColor.withOpacity(0.24),
-                                          blurRadius: 10,
-                                        ),
-                                      ]
-                                    : null,
+                        builder: (c, f) => AnimatedScale(
+                          scale: f ? 1.04 : 1.0,
+                          duration: const Duration(milliseconds: 120),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 130),
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: isPlaying ? _accentColor.withOpacity(0.15) : _cardColor,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: f
+                                    ? _accentColor
+                                    : isPlaying
+                                        ? _secondaryAccent
+                                        : Colors.white.withOpacity(0.06),
+                                width: f ? 2.4 : 1.2,
                               ),
-                              child: Row(
-                                children: [
-                                  buildChannelLogo(item.logo, size: 46, isLocked: isLocked),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                item.name,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: const TextStyle(
-                                                  fontSize: 13,
-                                                  fontWeight: FontWeight.bold,
-                                                ),
-                                              ),
-                                            ),
-                                            if (isFav)
-                                              const Icon(Icons.star_rounded, color: Colors.amber, size: 15),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Row(
-                                          children: [
-                                            buildQualityBadge(item.qualityTag),
-                                            const SizedBox(width: 6),
-                                            Expanded(
-                                              child: Text(
-                                                isPlaying ? '▶ OK p/ Ecrã Inteiro' : item.group,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  fontSize: 10.5,
-                                                  color: isPlaying ? _accentColor : Colors.white54,
-                                                  fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
+                              boxShadow: f
+                                  ? [
+                                      BoxShadow(
+                                        color: _accentColor.withOpacity(0.24),
+                                        blurRadius: 10,
+                                      ),
+                                    ]
+                                  : null,
                             ),
-                          );
-                        },
+                            child: Row(
+                              children: [
+                                buildChannelLogo(item.logo, size: 46, isLocked: isLocked),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: Text(
+                                              item.name,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ),
+                                          if (isFav)
+                                            const Icon(Icons.star_rounded, color: Colors.amber, size: 15),
+                                        ],
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Row(
+                                        children: [
+                                          buildQualityBadge(item.qualityTag),
+                                          const SizedBox(width: 6),
+                                          Expanded(
+                                            child: Text(
+                                              isPlaying ? '▶ OK p/ Tela Cheia' : item.group,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: TextStyle(
+                                                fontSize: 10.5,
+                                                color: isPlaying ? _accentColor : Colors.white54,
+                                                fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
                       );
                     },
                   ),
           ),
         ),
+
+        // COLUNA 3: DOCK DE PRÉ-VISUALIZAÇÃO
         Container(
           width: 320,
           decoration: BoxDecoration(
@@ -479,21 +473,22 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                       letterSpacing: 1.4,
                     ),
                   ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: Colors.redAccent.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: const Text(
-                      'AO VIVO',
-                      style: TextStyle(
-                        fontSize: 9,
-                        color: Colors.redAccent,
-                        fontWeight: FontWeight.w900,
+                  if (widget.activeItem != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.redAccent.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Text(
+                        'AO VIVO',
+                        style: TextStyle(
+                          fontSize: 9,
+                          color: Colors.redAccent,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
                     ),
-                  ),
                 ],
               ),
               const SizedBox(height: 12),
@@ -592,22 +587,21 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                     onSelect: () => _handleFullScreen(widget.activeItem!),
                     builder: (c, f) => AnimatedScale(
                       scale: f ? 1.04 : 1.0,
-                      duration: const Duration(milliseconds: 140),
+                      duration: const Duration(milliseconds: 120),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 13),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                         decoration: BoxDecoration(
                           color: f ? Colors.white : _accentColor,
-                          borderRadius: BorderRadius.circular(12),
-                          boxShadow: f ? [BoxShadow(color: _accentColor.withOpacity(0.4), blurRadius: 12)] : null,
+                          borderRadius: BorderRadius.circular(10),
                         ),
                         child: const Center(
                           child: Text(
-                            'ECRÃ INTEIRO',
+                            'TELA CHEIA',
                             style: TextStyle(
                               color: Colors.black,
                               fontWeight: FontWeight.w900,
-                              fontSize: 13,
-                              letterSpacing: 1.2,
+                              fontSize: 12.5,
+                              letterSpacing: 1.1,
                             ),
                           ),
                         ),
@@ -623,6 +617,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                     onSelect: () => SharedStreamEngine.instance.openStream(
                       widget.activeItem!,
                       forceReload: true,
+                      tryHlsFallback: true,
                     ),
                     builder: (c, f) => Container(
                       padding: const EdgeInsets.symmetric(vertical: 10),
