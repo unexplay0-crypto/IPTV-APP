@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'core.dart';
 
 // =============================================================================
-// 1. CONTROLE DE FOCO CIRÚRGICO PARA D-PAD (10-FOOT UI)
+// 1. CONTROLE DE FOCO CIRÚRGICO PARA D-PAD (10-FOOT UI COM ROLAGEM SUAVE)
 // =============================================================================
 class TVFocusableItem extends StatefulWidget {
   final VoidCallback onSelect;
@@ -47,7 +47,8 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
           Scrollable.ensureVisible(
             context,
             alignment: 0.35,
-            duration: const Duration(milliseconds: 140),
+            duration: const Duration(milliseconds: 210),
+            curve: Curves.easeOutCubic,
           );
         }
       },
@@ -116,8 +117,10 @@ class TVIconButton extends StatelessWidget {
       onSelect: onPressed,
       builder: (context, isFocused) => AnimatedScale(
         scale: isFocused ? 1.14 : 1.0,
-        duration: const Duration(milliseconds: 120),
-        child: Container(
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOutCubic,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
             color: isFocused ? const Color(0xFF00E5FF) : Colors.white.withOpacity(0.06),
@@ -139,11 +142,7 @@ class TVIconButton extends StatelessWidget {
 }
 
 // =============================================================================
-// 2. TECLADO VIRTUAL DE TV 2.0
-// - Sem botão de menu web separado
-// - 'http://' e '.' integrados na última fileira de letras
-// - 3 botões iguais embaixo: MAIÚSCULA, ESPAÇO e APAGAR
-// - Foco inicial sempre cravado na letra 'q' ao abrir ou alternar página
+// 2. TECLADO VIRTUAL DE TV 2.0 (FOCO SEMPRE NA LETRA 'Q')
 // =============================================================================
 Future<void> showTVVirtualKeyboard(
   BuildContext context,
@@ -218,7 +217,6 @@ Future<void> showTVVirtualKeyboard(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // VISOR ESPELHADO NO TOPO DO TECLADO + BOTÃO CONCLUÍR
                   Row(
                     children: [
                       Container(
@@ -284,8 +282,6 @@ Future<void> showTVVirtualKeyboard(
                     ],
                   ),
                   const SizedBox(height: 14),
-
-                  // FILEIRA 1: NÚMEROS
                   Wrap(
                     spacing: 6,
                     children: row1
@@ -299,8 +295,6 @@ Future<void> showTVVirtualKeyboard(
                         .toList(),
                   ),
                   const SizedBox(height: 6),
-
-                  // FILEIRA 2: QWERTYUIOP (Foco automático na tecla 'q')
                   Wrap(
                     spacing: 6,
                     children: row2.map((k) {
@@ -316,8 +310,6 @@ Future<void> showTVVirtualKeyboard(
                     }).toList(),
                   ),
                   const SizedBox(height: 6),
-
-                  // FILEIRA 3: ASDFGHJKL
                   Wrap(
                     spacing: 6,
                     children: row3.map((k) {
@@ -330,8 +322,6 @@ Future<void> showTVVirtualKeyboard(
                     }).toList(),
                   ),
                   const SizedBox(height: 6),
-
-                  // FILEIRA 4: ZXCVBNM + 'http://' + '.'
                   Wrap(
                     spacing: 6,
                     children: row4.map((k) {
@@ -347,8 +337,6 @@ Future<void> showTVVirtualKeyboard(
                     }).toList(),
                   ),
                   const SizedBox(height: 12),
-
-                  // BARRA INFERIOR: 3 BOTÕES IGUAIS (MAIÚSCULA, ESPAÇO, APAGAR)
                   Row(
                     children: [
                       Expanded(
@@ -742,7 +730,7 @@ Future<void> showChangeParentalPinDialog(
 }
 
 // =============================================================================
-// 4. CARDS VISUAIS OTIMIZADOS COM CACHE CONTROL (ANTI-OUTOFMEMORY)
+// 4. CARDS VISUAIS OTIMIZADOS (COM BADGE DUB/LEG E ANIMAÇÃO SUAVE)
 // =============================================================================
 Widget buildStreamingPosterCard({
   required String title,
@@ -756,12 +744,15 @@ Widget buildStreamingPosterCard({
   bool isAdultLocked = false,
   double? progress,
   VoidCallback? onFavoriteTap,
+  String? audioBadgeText,
 }) {
   return AnimatedScale(
     scale: isFocused ? 1.06 : 1.0,
-    duration: const Duration(milliseconds: 140),
+    duration: const Duration(milliseconds: 160),
     curve: Curves.easeOutCubic,
-    child: Container(
+    child: AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOutCubic,
       decoration: BoxDecoration(
         color: const Color(0xFF151928),
         borderRadius: BorderRadius.circular(12),
@@ -818,7 +809,34 @@ Widget buildStreamingPosterCard({
                 ),
               ),
             ),
-            Positioned(top: 8, left: 8, child: buildQualityBadge(badgeText)),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  buildQualityBadge(badgeText),
+                  if (audioBadgeText != null && audioBadgeText.isNotEmpty) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF7C4DFF).withOpacity(0.88),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(
+                        audioBadgeText,
+                        style: const TextStyle(
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
             if (onFavoriteTap != null)
               Positioned(
                 top: 6,
