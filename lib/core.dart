@@ -255,13 +255,13 @@ class SeriesGroup {
 // =============================================================================
 class AppStorage {
   static String get _tmp => Directory.systemTemp.path;
-  static File get _sessionFile => File('$_tmp/unex_v21_session.json');
-  static File get _deviceFile => File('$_tmp/unex_v21_device.json');
-  static File get _vodProgressFile => File('$_tmp/unex_v21_vod_progress.json');
-  static File get _favoritesFile => File('$_tmp/unex_v21_favorites.json');
-  static File get _recentsFile => File('$_tmp/unex_v21_recents.json');
-  static File get _offlinePlaylistFile => File('$_tmp/unex_v21_offline_playlist.json');
-  static File get _parentalPinFile => File('$_tmp/unex_v21_parental_pin.txt');
+  static File get _sessionFile => File('$_tmp/unex_v22_session.json');
+  static File get _deviceFile => File('$_tmp/unex_v22_device.json');
+  static File get _vodProgressFile => File('$_tmp/unex_v22_vod_progress.json');
+  static File get _favoritesFile => File('$_tmp/unex_v22_favorites.json');
+  static File get _recentsFile => File('$_tmp/unex_v22_recents.json');
+  static File get _offlinePlaylistFile => File('$_tmp/unex_v22_offline_playlist.json');
+  static File get _parentalPinFile => File('$_tmp/unex_v22_parental_pin.txt');
 
   static Future<DeviceMode> getOrDetectDeviceMode() async {
     try {
@@ -418,7 +418,7 @@ List<StreamItem> _decodePlaylistIsolate(String raw) =>
     (jsonDecode(raw) as List).map((e) => StreamItem.fromJson(e)).toList();
 
 // =============================================================================
-// 3. MOTOR DE VÍDEO COMPARTILHADO (PADRÃO XCIPTV / IPTV SMARTERS)
+// 3. MOTOR DE VÍDEO COMPARTILHADO (SURFACEVIEW NATIVA + TEXTURE FALLBACK)
 // =============================================================================
 class _StreamAttempt {
   final String url;
@@ -426,6 +426,7 @@ class _StreamAttempt {
   final Map<String, String> headers;
   final String label;
   final bool resolveRedirectFirst;
+  final VideoViewType viewType;
 
   const _StreamAttempt({
     required this.url,
@@ -433,6 +434,7 @@ class _StreamAttempt {
     required this.headers,
     required this.label,
     this.resolveRedirectFirst = false,
+    required this.viewType,
   });
 }
 
@@ -447,17 +449,27 @@ class SharedStreamEngine extends ChangeNotifier {
   bool isReady = false;
   bool hasError = false;
   bool isRecovering = false;
-  String activeFormatLabel = 'AUTO';
+  bool isFullScreenActive = false;
+  String activeFormatLabel = 'SURFACE-TV';
   String lastErrorDetails = '';
 
   int _opId = 0;
+  bool _runtimeFallbackTriggered = false;
   Timer? _watchdogTimer;
   Duration _lastPosition = Duration.zero;
   int _stallCounter = 0;
 
   void Function(VodProgressEntry entry)? onVodProgressSaved;
 
-  /// Segue redirecionamentos HTTP 301/302/307/308 de balanceadores IPTV sem baixar o corpo do vídeo
+  /// Ativa ou desativa o modo de Tela Cheia para isolar a superfície de vídeo única na TV
+  void setFullScreenActive(bool active) {
+    if (isFullScreenActive != active) {
+      isFullScreenActive = active;
+      notifyListeners();
+    }
+  }
+
+  /// Segue redirecionamentos HTTP 301/302/307/308 sem consumir a conexão do vídeo
   Future<String> _resolveRedirectLocationOnly(String rawUrl, Map<String, String> headers) async {
     try {
       Uri currentUri = Uri.parse(rawUrl);
@@ -503,7 +515,6 @@ class SharedStreamEngine extends ChangeNotifier {
     if (item.type == ContentType.live) {
       String tsUrl = raw;
       String m3u8Url = raw;
-      String shortTsUrl = raw;
 
       if (raw.endsWith('.ts')) {
         m3u8Url = '${raw.substring(0, raw.length - 3)}.m3u8';
@@ -514,100 +525,118 @@ class SharedStreamEngine extends ChangeNotifier {
         m3u8Url = '$raw.m3u8';
       }
 
-      if (tsUrl.contains('/live/')) {
-        shortTsUrl = tsUrl.replaceFirst('/live/', '/');
-      }
-
       if (!preferAlternate) {
-        // 1. HLS (.m3u8) com auto-detecção
+        // 1. SurfaceView Nativa (platformView) com HLS (.m3u8) — Resolve o erro MediaCodec nas Smart TVs TCL
         list.add(_StreamAttempt(
           url: m3u8Url,
           formatHint: null,
           headers: kIptvHeaders,
-          label: 'HLS-AUTO',
+          label: 'TV-SURFACE (HLS)',
+          viewType: VideoViewType.platformView,
         ));
-        // 2. MPEG-TS (.ts) com resolução de redirecionamento 302 e User-Agent VLC
+        // 2. SurfaceView Nativa (platformView) com MPEG-TS (.ts) + Redirecionamento 302
         list.add(_StreamAttempt(
           url: tsUrl,
           formatHint: null,
           headers: kVlcHeaders,
-          label: 'MPEG-TS',
+          label: 'TV-SURFACE (TS)',
           resolveRedirectFirst: true,
+          viewType: VideoViewType.platformView,
         ));
-        // 3. HLS com dica explícita VideoFormat.hls e User-Agent XCIPTV
+        // 3. TextureView com HLS Forçado
         list.add(_StreamAttempt(
           url: m3u8Url,
           formatHint: VideoFormat.hls,
           headers: kXciptvHeaders,
-          label: 'HLS-FORÇADO',
+          label: 'TEXTURE (HLS)',
           resolveRedirectFirst: true,
+          viewType: VideoViewType.textureView,
         ));
-        // 4. Rota curta sem /live/
-        if (shortTsUrl != tsUrl) {
-          list.add(_StreamAttempt(
-            url: shortTsUrl,
-            formatHint: null,
-            headers: kIptvHeaders,
-            label: 'DIRETO',
-          ));
-        }
+        // 4. TextureView com MPEG-TS
+        list.add(_StreamAttempt(
+          url: tsUrl,
+          formatHint: null,
+          headers: kIptvHeaders,
+          label: 'TEXTURE (TS)',
+          viewType: VideoViewType.textureView,
+        ));
       } else {
         list.add(_StreamAttempt(
           url: tsUrl,
           formatHint: null,
           headers: kVlcHeaders,
-          label: 'MPEG-TS',
+          label: 'TV-SURFACE (TS)',
           resolveRedirectFirst: true,
+          viewType: VideoViewType.platformView,
         ));
         list.add(_StreamAttempt(
           url: m3u8Url,
           formatHint: VideoFormat.hls,
           headers: kIptvHeaders,
-          label: 'HLS',
+          label: 'TEXTURE (HLS)',
           resolveRedirectFirst: true,
+          viewType: VideoViewType.textureView,
         ));
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
           headers: const {},
-          label: 'NATIVO',
+          label: 'SURFACE-DIRETO',
+          viewType: VideoViewType.platformView,
         ));
       }
     } else {
       // Filmes e Séries (VOD)
       if (!preferAlternate) {
+        // 1. SurfaceView Nativa (platformView) — Evita o crash de ImageReader/ColorInfo nas TVs TCL
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
           headers: kIptvHeaders,
-          label: 'VOD-DIRETO',
+          label: 'VOD-SURFACE',
+          viewType: VideoViewType.platformView,
         ));
+        // 2. SurfaceView Nativa com resolução de redirecionamento 302 e User-Agent VLC
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
           headers: kVlcHeaders,
-          label: 'VOD-302',
+          label: 'VOD-SURFACE-302',
           resolveRedirectFirst: true,
+          viewType: VideoViewType.platformView,
         ));
+        // 3. Fallback em TextureView
+        list.add(_StreamAttempt(
+          url: raw,
+          formatHint: null,
+          headers: kIptvHeaders,
+          label: 'VOD-TEXTURE',
+           resolveRedirectFirst: true,
+          viewType: VideoViewType.textureView,
+        ));
+        // 4. Sem cabeçalhos customizados em SurfaceView
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
           headers: const {},
           label: 'VOD-NATIVO',
+          viewType: VideoViewType.platformView,
         ));
       } else {
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
           headers: kVlcHeaders,
-          label: 'VOD-302',
+          label: 'VOD-TEXTURE',
           resolveRedirectFirst: true,
+          viewType: VideoViewType.textureView,
         ));
         list.add(_StreamAttempt(
           url: raw,
           formatHint: null,
-          headers: const {},
-          label: 'VOD-NATIVO',
+          headers: kIptvHeaders,
+          label: 'VOD-SURFACE',
+          viewType: VideoViewType.platformView,
         ));
       }
     }
@@ -637,6 +666,7 @@ class SharedStreamEngine extends ChangeNotifier {
     }
 
     final int myOp = ++_opId;
+    if (!tryHlsFallback) _runtimeFallbackTriggered = false;
 
     _saveCurrentVodProgressImmediately();
     _watchdogTimer?.cancel();
@@ -653,7 +683,7 @@ class SharedStreamEngine extends ChangeNotifier {
 
     _fetchMockEpg(item);
 
-    // Libera 100% do decoder de hardware e da conexão anterior antes de abrir o novo stream
+    // Libera 100% do decoder de hardware da TV com margem de 450ms para o firmware da TV resetar o MediaCodec
     if (oldController != null) {
       try {
         await oldController.pause();
@@ -661,7 +691,7 @@ class SharedStreamEngine extends ChangeNotifier {
       try {
         await oldController.dispose();
       } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 250));
+      await Future.delayed(const Duration(milliseconds: 450));
     }
 
     if (myOp != _opId) return;
@@ -681,6 +711,7 @@ class SharedStreamEngine extends ChangeNotifier {
         Uri.parse(targetUrl),
         httpHeaders: attempt.headers,
         formatHint: attempt.formatHint,
+        viewType: attempt.viewType,
         videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       );
 
@@ -691,9 +722,6 @@ class SharedStreamEngine extends ChangeNotifier {
           return;
         }
 
-        controller = testCtrl;
-        activeFormatLabel = attempt.label;
-
         if (item.type != ContentType.live &&
             startPosition != null &&
             startPosition.inSeconds > 5) {
@@ -703,10 +731,38 @@ class SharedStreamEngine extends ChangeNotifier {
         await testCtrl.setVolume(1.0);
         await testCtrl.play();
 
+        // Verifica durante 400ms se o MediaCodecVideoRenderer não disparou erro assíncrono logo após o play()
+        await Future.delayed(const Duration(milliseconds: 400));
+        if (myOp != _opId) {
+          await testCtrl.dispose().catchError((_) {});
+          return;
+        }
+        if (testCtrl.value.hasError) {
+          throw Exception(testCtrl.value.errorDescription ?? 'MediaCodec post-play error');
+        }
+
+        controller = testCtrl;
+        activeFormatLabel = attempt.label;
         isReady = true;
         hasError = false;
         isRecovering = false;
         lastErrorDetails = '';
+
+        // Monitora erros tardios do MediaCodec durante a reprodução
+        testCtrl.addListener(() {
+          if (controller == testCtrl && testCtrl.value.hasError && !hasError) {
+            lastErrorDetails = testCtrl.value.errorDescription ?? 'Erro de decodificação de vídeo';
+            if (!_runtimeFallbackTriggered && currentItem != null) {
+              _runtimeFallbackTriggered = true;
+              openStream(currentItem!, forceReload: true, tryHlsFallback: true);
+            } else {
+              hasError = true;
+              isReady = false;
+              notifyListeners();
+            }
+          }
+        });
+
         _startWatchdog();
         notifyListeners();
         return;
@@ -714,7 +770,7 @@ class SharedStreamEngine extends ChangeNotifier {
         lastErrorDetails = e.toString().replaceAll('PlatformException', '').trim();
         await testCtrl.dispose().catchError((_) {});
         if (myOp != _opId) return;
-        await Future.delayed(const Duration(milliseconds: 250));
+        await Future.delayed(const Duration(milliseconds: 400));
       }
     }
 
@@ -823,7 +879,7 @@ class SharedStreamEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Para imediatamente qualquer pré-visualização ativa e libera a conexão no servidor IPTV
+  /// Para imediatamente qualquer vídeo ativo e libera o MediaCodec e a conexão no servidor IPTV
   Future<void> stopAndClear() async {
     _opId++;
     _saveCurrentVodProgressImmediately();
