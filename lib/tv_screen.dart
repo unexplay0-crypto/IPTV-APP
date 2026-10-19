@@ -74,7 +74,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   bool _adultUnlocked = false;
   Timer? _previewDebounce;
 
-  // Paleta 10-Foot UI (Inspirada no Vertu Play + TiviMate + Max)
   final Color _bgColor = const Color(0xFF090B10);
   final Color _panelColor = const Color(0xFF111520);
   final Color _cardColor = const Color(0xFF161B2A);
@@ -97,7 +96,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     });
   }
 
-  // Debounce inteligente de 650ms: permite navegar rápido pelas setas sem travar a TV
+  // Debounce inteligente: só sintoniza no preview se o usuário parar o foco por 650ms
   void _schedulePreviewOnFocus(StreamItem item) {
     _previewDebounce?.cancel();
     if (widget.activeItem?.id == item.id) return;
@@ -159,16 +158,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     }
   }
 
-  Future<void> _handleVodSelect(StreamItem item) async {
-    _previewDebounce?.cancel();
-    if (item.isAdult && !_adultUnlocked) {
-      final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
-      if (!unlocked || !mounted) return;
-      setState(() => _adultUnlocked = true);
-    }
-    widget.onStartPreview(item);
-  }
-
   Future<void> _handleFullScreen(StreamItem item) async {
     _previewDebounce?.cancel();
     if (item.isAdult && !_adultUnlocked) {
@@ -206,7 +195,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
       backgroundColor: _bgColor,
       body: Row(
         children: [
-          // 1. NAVIGATION RAIL LATERAL (RECOLHIDO 60px / EXPANDIDO 230px)
           AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             curve: Curves.easeOutCubic,
@@ -217,8 +205,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
             ),
             child: widget.isSideMenuOpen ? _buildExpandedMenu() : _buildCollapsedRail(),
           ),
-
-          // 2. CORPO PRINCIPAL (3 COLUNAS AO VIVO vs IMERSIVO VOD)
           Expanded(
             child: isLive ? _buildLiveTVLayout() : _buildImmersiveVodLayout(),
           ),
@@ -227,13 +213,9 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     );
   }
 
-  // ===========================================================================
-  // MODO 1: TV AO VIVO EM 3 COLUNAS (ESTILO VERTU PLAY / TIVIMATE)
-  // ===========================================================================
   Widget _buildLiveTVLayout() {
     return Row(
       children: [
-        // COLUNA 1: GRUPOS E CATEGORIAS
         Container(
           width: 235,
           color: _bgColor,
@@ -310,7 +292,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                       builder: (c, f) => AnimatedContainer(
                         duration: const Duration(milliseconds: 130),
                         margin: const EdgeInsets.symmetric(vertical: 3),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                         decoration: BoxDecoration(
                           color: isSel
                               ? _accentColor.withOpacity(0.16)
@@ -362,8 +344,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
             ],
           ),
         ),
-
-        // COLUNA 2: GRADE DE CANAIS DE ALTA LEGIBILIDADE
         Expanded(
           child: Container(
             color: _panelColor.withOpacity(0.45),
@@ -452,7 +432,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                                             const SizedBox(width: 6),
                                             Expanded(
                                               child: Text(
-                                                isPlaying ? '▶ OK p/ Tela Cheia' : item.group,
+                                                isPlaying ? '▶ OK p/ Ecrã Inteiro' : item.group,
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
                                                 style: TextStyle(
@@ -477,8 +457,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                   ),
           ),
         ),
-
-        // COLUNA 3: DOCK DE PRÉ-VISUALIZAÇÃO AO VIVO + GUIA EPG + AÇÕES
         Container(
           width: 320,
           decoration: BoxDecoration(
@@ -614,21 +592,22 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                     onSelect: () => _handleFullScreen(widget.activeItem!),
                     builder: (c, f) => AnimatedScale(
                       scale: f ? 1.04 : 1.0,
-                      duration: const Duration(milliseconds: 120),
+                      duration: const Duration(milliseconds: 140),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        padding: const EdgeInsets.symmetric(vertical: 13),
                         decoration: BoxDecoration(
                           color: f ? Colors.white : _accentColor,
-                          borderRadius: BorderRadius.circular(10),
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: f ? [BoxShadow(color: _accentColor.withOpacity(0.4), blurRadius: 12)] : null,
                         ),
                         child: const Center(
                           child: Text(
-                            'TELA CHEIA',
+                            'ECRÃ INTEIRO',
                             style: TextStyle(
                               color: Colors.black,
                               fontWeight: FontWeight.w900,
-                              fontSize: 12.5,
-                              letterSpacing: 1.1,
+                              fontSize: 13,
+                              letterSpacing: 1.2,
                             ),
                           ),
                         ),
@@ -644,7 +623,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                     onSelect: () => SharedStreamEngine.instance.openStream(
                       widget.activeItem!,
                       forceReload: true,
-                      tryHlsFallback: true,
                     ),
                     builder: (c, f) => Container(
                       padding: const EdgeInsets.symmetric(vertical: 10),
@@ -698,9 +676,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     );
   }
 
-  // ===========================================================================
-  // MODO 2: FILMES E SÉRIES IMERSIVO (ESTILO NETFLIX / MAX A 60 FPS)
-  // ===========================================================================
   Widget _buildImmersiveVodLayout() {
     final isSeries = widget.activeSection == MainSection.series;
     final bgUrl = isSeries ? _focusedSeriesGroup?.logo : _focusedVodItem?.logo;
@@ -725,7 +700,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // 1. BACKDROP PANORÂMICO LEVE (SEM BLUR PESADO PARA MANTER 60 FPS NA TV BOX)
         if (bgUrl != null && bgUrl.isNotEmpty && !isFocusedAdultLocked)
           Positioned(
             top: 0,
@@ -740,8 +714,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
               errorBuilder: (_, __, ___) => Container(color: _bgColor),
             ),
           ),
-
-        // VIGNETTE EM GRADIENTE PROFUNDO
         Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -756,12 +728,9 @@ class _TVDashboardViewState extends State<TVDashboardView> {
             ),
           ),
         ),
-
-        // 2. CONTEÚDO: BARRA DE GÊNEROS + HERO BANNER + CARROSSEL DE PÔSTERES
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Barra Superior de Pesquisa e Categorias
             Padding(
               padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
               child: SizedBox(
@@ -848,8 +817,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                 ),
               ),
             ),
-
-            // HERO BANNER CENTRAL
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(36, 16, 36, 0),
@@ -915,8 +882,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                 ),
               ),
             ),
-
-            // CARROSSEL DE PÔSTERES
             SizedBox(
               height: 265,
               child: isSeries
@@ -1004,9 +969,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     );
   }
 
-  // ===========================================================================
-  // MENU LATERAL RETRÁTIL (NAVIGATION RAIL)
-  // ===========================================================================
   Widget _buildCollapsedRail() {
     return Column(
       children: [
