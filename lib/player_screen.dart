@@ -35,7 +35,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
   final FocusNode _playPauseNode = FocusNode();
   VideoScaleMode _scaleMode = VideoScaleMode.contain;
 
-  // Variáveis para Gestos Táteis (Exclusivo Celular)
+  // Variáveis para Gestos Táteis (Brilho / Volume no Celular)
   double _gestureStartVolume = 0.5;
   double _gestureStartBrightness = 0.5;
   int _gestureSeekSeconds = 0;
@@ -47,7 +47,6 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
   void initState() {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    // Na tela cheia, força orientação horizontal (Paisagem) tanto na TV quanto no Celular
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
@@ -199,9 +198,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     return hours > 0 ? '$hours:$mins:$secs' : '$mins:$secs';
   }
 
-  // ===========================================================================
-  // GESTOS TÁTEIS DE BRILHO, VOLUME E TEMPO (EXCLUSIVO CELULAR)
-  // ===========================================================================
+  // Gestos Táteis no Telemóvel
   void _onPanStart(DragStartDetails details) async {
     if (widget.deviceMode == DeviceMode.tv) return;
     _isSeekingByGesture = false;
@@ -258,9 +255,6 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     });
   }
 
-  // ===========================================================================
-  // RENDERIZAÇÃO DO VÍDEO COM SUPORTE A MODOS DE ESCALA (ORIGINAL / ZOOM / ESTICAR)
-  // ===========================================================================
   Widget _buildVideoSurface(VideoPlayerController ctrl) {
     final videoWidth = ctrl.value.size.width > 0 ? ctrl.value.size.width : 1280.0;
     final videoHeight = ctrl.value.size.height > 0 ? ctrl.value.size.height : 720.0;
@@ -288,9 +282,6 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     );
   }
 
-  // ===========================================================================
-  // GAVETA LATERAL DE CANAIS / EPISÓDIOS (ESTILO NETFLIX)
-  // ===========================================================================
   Widget _buildSideDrawer() {
     if (!showDrawer) return const SizedBox.shrink();
 
@@ -339,7 +330,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                     final isPlaying = item.id == currentItem.id;
                     final isLocked = item.isAdult && !_adultUnlocked;
                     return TVFocusableItem(
-                      autofocus: isPlaying && widget.deviceMode == DeviceMode.tv,
+                      autofocus: isPlaying && showDrawer && widget.deviceMode == DeviceMode.tv,
                       onSelect: () => _switchStream(item),
                       builder: (c, isFocused) => Container(
                         margin: const EdgeInsets.only(bottom: 6),
@@ -390,9 +381,6 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     );
   }
 
-  // ===========================================================================
-  // CONSTRUÇÃO DO PLAYER UNIFICADO (TV + CELULAR)
-  // ===========================================================================
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -466,111 +454,111 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  // CAMADA 1: SUPERFÍCIE DE VÍDEO + DETECTOR DE TOQUE / GESTOS NO FUNDO
+                  // CAMADA 1: VÍDEO
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTap: _toggleOsd,
                     onPanStart: _onPanStart,
                     onPanUpdate: _onPanUpdate,
                     onPanEnd: _onPanEnd,
-                    child: _engine.hasError
-                        ? Center(
-                            child: Container(
-                              padding: const EdgeInsets.all(24),
-                              margin: const EdgeInsets.all(24),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF101420),
-                                borderRadius: BorderRadius.circular(18),
-                                border: Border.all(color: Colors.redAccent),
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 48),
-                                  const SizedBox(height: 12),
-                                  const Text(
-                                    'Sinal Indisponível no Momento',
-                                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  const Text(
-                                    'Tente reconectar usando o modo alternativo (HLS / MPEG-TS).',
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(color: Colors.white70, fontSize: 12.5),
-                                  ),
-                                  const SizedBox(height: 18),
-                                  Wrap(
-                                    spacing: 12,
-                                    children: [
-                                      TVFocusableItem(
-                                        autofocus: true,
-                                        autoScroll: false,
-                                        onSelect: () => _engine.openStream(
-                                          currentItem,
-                                          forceReload: true,
-                                          tryHlsFallback: true,
-                                        ),
-                                        builder: (c, f) => Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
-                                          decoration: BoxDecoration(
-                                            color: f ? Colors.white : const Color(0xFF00E5FF),
-                                            borderRadius: BorderRadius.circular(10),
-                                          ),
-                                          child: const Text(
-                                            'Alternar Formato (HLS/TS)',
-                                            style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900),
-                                          ),
-                                        ),
-                                      ),
-                                      TVFocusableItem(
-                                        autoScroll: false,
-                                        onSelect: () => Navigator.pop(context),
-                                        builder: (c, f) => Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
-                                          decoration: BoxDecoration(
-                                            border: Border.all(color: f ? Colors.white : Colors.white24),
-                                            borderRadius: BorderRadius.circular(10),
-                                          ),
-                                          child: const Text('Voltar'),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                              ),
-                            ),
-                          )
-                        : isReady
-                            ? _buildVideoSurface(ctrl)
-                            : const Center(
+                    child: Center(
+                      child: _engine.hasError
+                          ? Center(
+                              child: Container(
+                                padding: const EdgeInsets.all(22),
+                                margin: const EdgeInsets.all(24),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF101420),
+                                  borderRadius: BorderRadius.circular(18),
+                                  border: Border.all(color: Colors.redAccent),
+                                ),
                                 child: Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    CircularProgressIndicator(color: Color(0xFF00E5FF)),
-                                    SizedBox(height: 12),
+                                    const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 48),
+                                    const SizedBox(height: 12),
+                                    const Text(
+                                      'Sinal Indisponível no Momento',
+                                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                                    ),
+                                    const SizedBox(height: 6),
                                     Text(
-                                      'Sintonizando transmissão...',
-                                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                                      _engine.lastErrorDetails.isNotEmpty
+                                          ? 'Detalhe: ${_engine.lastErrorDetails}'
+                                          : 'O servidor IPTV pode estar ocupado ou fora do ar.',
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                    ),
+                                    const SizedBox(height: 18),
+                                    Wrap(
+                                      spacing: 12,
+                                      children: [
+                                        TVFocusableItem(
+                                          autofocus: true,
+                                          autoScroll: false,
+                                          onSelect: () => _engine.openStream(currentItem, forceReload: true),
+                                          builder: (c, f) => Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+                                            decoration: BoxDecoration(
+                                              color: f ? Colors.white : const Color(0xFF00E5FF),
+                                              borderRadius: BorderRadius.circular(10),
+                                            ),
+                                            child: const Text(
+                                              'Tentar Novamente',
+                                              style: TextStyle(color: Colors.black, fontWeight: FontWeight.w900),
+                                            ),
+                                          ),
+                                        ),
+                                        TVFocusableItem(
+                                          autoScroll: false,
+                                          onSelect: () => Navigator.pop(context),
+                                          builder: (c, f) => Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+                                            decoration: BoxDecoration(
+                                              border: Border.all(color: f ? Colors.white : Colors.white24),
+                                              borderRadius: BorderRadius.circular(10),
+                                            ),
+                                            child: const Text('Voltar'),
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                   ],
                                 ),
                               ),
+                            )
+                          : isReady
+                              ? _buildVideoSurface(ctrl)
+                              : const Center(
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      CircularProgressIndicator(color: Color(0xFF00E5FF)),
+                                      SizedBox(height: 12),
+                                      Text(
+                                        'Carregando transmissão...',
+                                        style: TextStyle(color: Colors.white70, fontSize: 13),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                    ),
                   ),
 
-                  // CAMADA 2: INDICADOR DE GESTOS (BRILHO / VOLUME / AVANÇO NO CELULAR)
+                  // CAMADA 2: OVERLAY GESTOS (MÓVEL)
                   if (_gestureOverlayText.isNotEmpty)
                     Center(
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
                         decoration: BoxDecoration(
                           color: Colors.black87,
-                          borderRadius: BorderRadius.circular(14),
+                          borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: const Color(0xFF00E5FF), width: 2),
                         ),
                         child: Text(
                           _gestureOverlayText,
                           style: const TextStyle(
-                            fontSize: 20,
+                            fontSize: 24,
                             fontWeight: FontWeight.w900,
                             color: Color(0xFF00E5FF),
                           ),
@@ -578,8 +566,8 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                       ),
                     ),
 
-                  // CAMADA 3: CONTROLES OSD ESTILO NETFLIX (ATUALIZADOS EM TEMPO REAL PELO CONTROLLER)
-                  if (showOsd)
+                  // CAMADA 3: OSD (CONTROLES ESTILO NETFLIX)
+                  if (showOsd && !_engine.hasError)
                     GestureDetector(
                       behavior: HitTestBehavior.translucent,
                       onTap: _toggleOsd,
@@ -595,7 +583,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                               Colors.black45,
                               Colors.black87,
                             ],
-                            stops: [0.0, 0.22, 0.5, 0.78, 1.0],
+                            stops: [0.0, 0.2, 0.5, 0.8, 1.0],
                           ),
                         ),
                         child: SafeArea(
@@ -609,7 +597,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                       ),
                     ),
 
-                  // CAMADA 4: GAVETA LATERAL DE CANAIS / EPISÓDIOS
+                  // CAMADA 4: MENU LATERAL (GAVETA DE CANAIS)
                   _buildSideDrawer(),
                 ],
               ),
@@ -631,18 +619,17 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
     return Column(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        // 1. BARRA SUPERIOR (VOLTAR, TÍTULO, FORMATO TS/HLS, ESCALA DE TELA)
+        // BARRA SUPERIOR
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
           child: Row(
             children: [
               TVIconButton(
                 icon: Icons.arrow_back_ios_new_rounded,
-                size: 22,
-                color: Colors.white,
+                size: 24,
                 onPressed: () => Navigator.pop(context),
               ),
-              const SizedBox(width: 14),
+              const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -651,15 +638,13 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                       currentItem.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, letterSpacing: 0.5),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${currentItem.group} • Modo ${_engine.activeFormatLabel}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                      '${currentItem.group} • ${_engine.activeFormatLabel}',
                       style: const TextStyle(
-                        fontSize: 11.5,
+                        fontSize: 12,
                         color: Color(0xFF00E5FF),
                         fontWeight: FontWeight.bold,
                       ),
@@ -669,29 +654,6 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
               ),
               buildQualityBadge(currentItem.qualityTag),
               const SizedBox(width: 10),
-              TVFocusableItem(
-                autoScroll: false,
-                onSelect: () {
-                  _engine.openStream(currentItem, forceReload: true, tryHlsFallback: true);
-                  _resetOsdTimer();
-                },
-                builder: (c, f) => Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: f ? const Color(0xFF00E5FF) : Colors.white12,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    'TS/HLS',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w900,
-                      color: f ? Colors.black : Colors.white,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
               TVFocusableItem(
                 autoScroll: false,
                 onSelect: _cycleScaleMode,
@@ -721,14 +683,13 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
           ),
         ),
 
-        // 2. CONTROLES CENTRAIS GIGANTES ESTILO NETFLIX
+        // CONTROLES CENTRAIS
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             TVIconButton(
               icon: isVod ? Icons.replay_10_rounded : Icons.skip_previous_rounded,
-              size: 40,
-              color: Colors.white,
+              size: 46,
               onPressed: () {
                 if (isVod) {
                   _engine.seekRelative(-10);
@@ -738,53 +699,40 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                 _resetOsdTimer();
               },
             ),
-            const SizedBox(width: 42),
+            const SizedBox(width: 48),
             TVFocusableItem(
               focusNode: _playPauseNode,
               autofocus: true,
               autoScroll: false,
               onSelect: _handlePlayPause,
               builder: (c, f) => AnimatedScale(
-                scale: f ? 1.12 : 1.0,
-                duration: const Duration(milliseconds: 130),
+                scale: f ? 1.1 : 1.0,
+                duration: const Duration(milliseconds: 150),
                 child: Container(
-                  padding: const EdgeInsets.all(16),
+                  padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
                     color: f ? const Color(0xFF00E5FF) : Colors.black54,
                     shape: BoxShape.circle,
-                    border: Border.all(
-                      color: f ? Colors.white : const Color(0xFF00E5FF),
-                      width: 2.5,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF00E5FF).withOpacity(0.35),
-                        blurRadius: 16,
-                      ),
-                    ],
+                    border: Border.all(color: const Color(0xFF00E5FF), width: 2.5),
                   ),
                   child: isBuffering
-                      ? SizedBox(
+                      ? const SizedBox(
                           width: 44,
                           height: 44,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 3,
-                            color: f ? Colors.black : const Color(0xFF00E5FF),
-                          ),
+                          child: CircularProgressIndicator(strokeWidth: 3, color: Color(0xFF00E5FF)),
                         )
                       : Icon(
                           isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                          size: 48,
+                          size: 58,
                           color: f ? Colors.black : Colors.white,
                         ),
                 ),
               ),
             ),
-            const SizedBox(width: 42),
+            const SizedBox(width: 48),
             TVIconButton(
               icon: isVod ? Icons.forward_10_rounded : Icons.skip_next_rounded,
-              size: 40,
-              color: Colors.white,
+              size: 46,
               onPressed: () {
                 if (isVod) {
                   _engine.seekRelative(10);
@@ -797,119 +745,97 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
           ],
         ),
 
-        // 3. BARRA INFERIOR (LINHA DO TEMPO INTERATIVA + BOTÃO DE CANAIS/EPISÓDIOS)
+        // BARRA INFERIOR
         Padding(
-          padding: const EdgeInsets.fromLTRB(22, 0, 22, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              if (isVod && val != null)
-                Row(
-                  children: [
-                    Text(
-                      _formatDuration(position),
-                      style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                    ),
-                    Expanded(
-                      child: SliderTheme(
-                        data: SliderTheme.of(context).copyWith(
-                          trackHeight: 4,
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-                          activeTrackColor: const Color(0xFF00E5FF),
-                          inactiveTrackColor: Colors.white24,
-                          thumbColor: const Color(0xFF00E5FF),
-                        ),
-                        child: Slider(
-                          value: curSeconds,
-                          min: 0.0,
-                          max: maxSeconds,
-                          onChanged: (newVal) {
-                            _engine.controller?.seekTo(Duration(seconds: newVal.toInt()));
-                            _resetOsdTimer();
-                          },
-                        ),
-                      ),
-                    ),
-                    Text(
-                      _formatDuration(duration),
-                      style: const TextStyle(fontSize: 12, color: Colors.white70),
-                    ),
-                  ],
-                ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  if (!isVod)
-                    Expanded(
-                      child: Row(
+              Expanded(
+                child: isVod
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: Colors.redAccent,
-                              borderRadius: BorderRadius.circular(4),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(_formatDuration(position), style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                              Text(_formatDuration(duration), style: const TextStyle(fontSize: 13, color: Colors.white70)),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          SliderTheme(
+                            data: SliderTheme.of(context).copyWith(
+                              trackHeight: 4,
+                              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                              activeTrackColor: const Color(0xFF00E5FF),
+                              inactiveTrackColor: Colors.white24,
+                              thumbColor: const Color(0xFF00E5FF),
                             ),
-                            child: const Text(
-                              'AO VIVO',
-                              style: TextStyle(fontSize: 10, fontWeight: FontWeight.w900),
+                            child: Slider(
+                              value: curSeconds,
+                              min: 0.0,
+                              max: maxSeconds,
+                              onChanged: (newVal) {
+                                _engine.controller?.seekTo(Duration(seconds: newVal.toInt()));
+                                _resetOsdTimer();
+                              },
                             ),
                           ),
-                          const SizedBox(width: 10),
-                          if (_engine.currentEpg != null)
-                            Expanded(
-                              child: Text(
-                                '${_engine.currentEpg!.nowTitle}  •  ${_engine.currentEpg!.nextTitle}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 12.5, color: Colors.white70),
+                        ],
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.circle, color: Colors.redAccent, size: 10),
+                              const SizedBox(width: 6),
+                              const Text(
+                                'AO VIVO',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, letterSpacing: 1.5),
                               ),
-                            ),
-                        ],
-                      ),
-                    )
-                  else
-                    const Text(
-                      'Dica: Use -10s / +10s ou arraste a barra para avançar',
-                      style: TextStyle(fontSize: 11.5, color: Colors.white54),
-                    ),
-                  const SizedBox(width: 16),
-                  TVFocusableItem(
-                    autoScroll: false,
-                    onSelect: () {
-                      setState(() => showDrawer = true);
-                      _hideTimer?.cancel();
-                    },
-                    builder: (c, f) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                      decoration: BoxDecoration(
-                        color: f ? const Color(0xFF00E5FF) : Colors.white12,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(
-                          color: f ? Colors.white : Colors.white24,
-                          width: f ? 2 : 1,
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            Icons.format_list_bulleted_rounded,
-                            size: 18,
-                            color: f ? Colors.black : Colors.white,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            isVod ? 'Episódios / Lista' : 'Lista de Canais',
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.bold,
-                              color: f ? Colors.black : Colors.white,
-                            ),
+                              if (_engine.currentEpg != null) ...[
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    '• ${_engine.currentEpg!.nowTitle}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 13, color: Colors.white),
+                                  ),
+                                ),
+                              ],
+                            ],
                           ),
                         ],
                       ),
-                    ),
+              ),
+              const SizedBox(width: 24),
+              TVFocusableItem(
+                autoScroll: false,
+                onSelect: () {
+                  setState(() => showDrawer = true);
+                  _hideTimer?.cancel();
+                },
+                builder: (c, f) => Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: f ? const Color(0xFF00E5FF) : Colors.white10,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: f ? Colors.white : Colors.transparent, width: 2),
                   ),
-                ],
+                  child: Row(
+                    children: [
+                      Icon(Icons.format_list_bulleted_rounded, size: 20, color: f ? Colors.black : Colors.white),
+                      const SizedBox(width: 8),
+                      Text(
+                        isVod ? 'Episódios' : 'Canais',
+                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: f ? Colors.black : Colors.white),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
