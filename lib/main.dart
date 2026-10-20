@@ -577,7 +577,7 @@ class _LoginGatewayScreenState extends State<LoginGatewayScreen> {
 }
 
 // =============================================================================
-// 3. PAINEL PRINCIPAL 2.0 (SUPERFÍCIE ISOLADA + UNIFICAÇÃO DUBLADO/LEGENDADO)
+// 3. PAINEL PRINCIPAL 2.3 (COM SELETOR DUBLADO/LEGENDADO E EXPANSÃO FLUIDA)
 // =============================================================================
 class MainDashboard extends StatefulWidget {
   final DeviceMode deviceMode;
@@ -703,11 +703,14 @@ class _MainDashboardState extends State<MainDashboard> {
     recentItems = await AppStorage.loadRecents();
     vodProgressMap = await AppStorage.loadVodProgressMap();
 
+    // 1. Abertura instantânea pelo cache local (< 1 segundo) SEM auto-play
     final cached = await AppStorage.loadOfflinePlaylist();
     if (cached.isNotEmpty && mounted) {
-      await _applyCatalog(cached, null);
+      final unifiedCached = await compute(unifyMoviesByLanguage, cached);
+      await _applyCatalog(unifiedCached, null);
     }
 
+    // 2. Prioridade 1: Carregamento rápido via Xtream Codes API JSON
     final creds = XtreamCatalogService.extractXtreamCredentials(
       serverDns: _activeServerDns,
       username: widget.username,
@@ -740,6 +743,7 @@ class _MainDashboardState extends State<MainDashboard> {
       }
     }
 
+    // 3. Prioridade 2 (Fallback): Download da lista M3U completa
     try {
       if (mounted && cached.isEmpty) {
         setState(() => loadingStatus = 'Baixando lista M3U completa...');
@@ -967,7 +971,10 @@ class _MainDashboardState extends State<MainDashboard> {
     AppStorage.saveRecents(recentItems);
   }
 
-  // Abre a Tela Cheia com a nova animação fluida de Expansão/Encolhimento mantendo a trava de superfície intacta
+  // ===========================================================================
+  // ABERTURA DE TELA CHEIA COM ANIMAÇÃO DE EXPANSÃO/ENCOLHIMENTO DO MINI-PLAYER
+  // E ISOLAMENTO BLINDADO DA SUPERFÍCIE DE VÍDEO
+  // ===========================================================================
   Future<void> _openFullScreen(StreamItem item, {List<StreamItem>? customList}) async {
     _recordRecent(item);
 
@@ -984,9 +991,12 @@ class _MainDashboardState extends State<MainDashboard> {
       if (startPos == null) return;
     }
 
-    // Desacopla a superfície do mini-player ANTES de abrir a rota de Tela Cheia (Regra Blindada)
+    final bool expandFromPreview =
+        item.type == ContentType.live && _engine.currentItem?.id == item.id;
+
+    // Desacopla a superfície do mini-player ANTES de abrir a rota de Tela Cheia (Player Blindado)
     _engine.setFullScreenActive(true);
-    await Future.delayed(const Duration(milliseconds: 80));
+    await Future.delayed(const Duration(milliseconds: 60));
 
     if (!mounted) return;
     await Navigator.push(
@@ -998,7 +1008,8 @@ class _MainDashboardState extends State<MainDashboard> {
           deviceMode: _mode,
           initialStartPosition: startPos,
         ),
-        mode: _mode,
+        deviceMode: _mode,
+        fromPreviewDock: expandFromPreview,
       ),
     );
 
@@ -1009,7 +1020,7 @@ class _MainDashboardState extends State<MainDashboard> {
 
   void _handlePreviewOrPlay(StreamItem item) {
     _recordRecent(item);
-    // Se for Filme, para qualquer canal ao vivo e abre a ficha com opção Dublado / Legendado (L)
+    // Se for Filme, para qualquer canal ao vivo e abre a ficha com opções Dublado / Legendado (L)
     if (item.type == ContentType.movie) {
       if (_engine.currentItem != null) {
         _engine.stopAndClear();
@@ -1017,7 +1028,7 @@ class _MainDashboardState extends State<MainDashboard> {
       _showVodMetadataSheet(item);
       return;
     }
-    // Se for Canal ao Vivo: 1º clique inicia a pré-visualização; 2º clique no mesmo canal expande para Tela Cheia
+    // Se for Canal ao Vivo: 1º clique inicia a pré-visualização; 2º clique expande para Tela Cheia
     if (_engine.currentItem?.id == item.id) {
       _openFullScreen(item);
       return;
@@ -1026,7 +1037,7 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   // ===========================================================================
-  // FICHA DE METADADOS VOD (COM OPÇÃO DE ASSISTIR DUBLADO OU LEGENDADO '(L)')
+  // FICHA COMPLETA DE FILMES COM OPÇÃO DE ASSISTIR DUBLADO OU LEGENDADO (L)
   // ===========================================================================
   void _showVodMetadataSheet(StreamItem initialItem) {
     StreamItem detailedItem = initialItem;
@@ -1060,11 +1071,10 @@ class _MainDashboardState extends State<MainDashboard> {
           }
 
           final savedDubProg = vodProgressMap[detailedItem.id];
-          final subItemId = '${detailedItem.id}_sub';
-          final savedSubProg = vodProgressMap[subItemId];
-          final savedProg = savedDubProg ?? savedSubProg;
+          final savedSubProg = vodProgressMap['${detailedItem.id}_leg'];
+          final activeProg = savedDubProg ?? savedSubProg;
           final isFav = favoriteIds.contains(detailedItem.id);
-          final hasDualAudio = detailedItem.hasBothAudioOptions;
+          final hasDual = detailedItem.hasBothAudioOptions;
 
           return Dialog(
             backgroundColor: const Color(0xFF0E121E),
@@ -1086,8 +1096,8 @@ class _MainDashboardState extends State<MainDashboard> {
                         ClipRRect(
                           borderRadius: BorderRadius.circular(12),
                           child: SizedBox(
-                            width: 110,
-                            height: 160,
+                            width: 112,
+                            height: 164,
                             child: detailedItem.logo.isNotEmpty
                                 ? Image.network(
                                     detailedItem.logo,
@@ -1111,42 +1121,16 @@ class _MainDashboardState extends State<MainDashboard> {
                             children: [
                               Wrap(
                                 spacing: 8,
-                                runSpacing: 4,
+                                runSpacing: 6,
                                 crossAxisAlignment: WrapCrossAlignment.center,
                                 children: [
                                   buildQualityBadge(detailedItem.qualityTag),
-                                  if (hasDualAudio)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF7C4DFF).withOpacity(0.85),
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: const Text(
-                                        'DUBLADO & LEGENDADO (L)',
-                                        style: TextStyle(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w900,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    )
+                                  if (hasDual)
+                                    buildAudioOptionBadge('DUBLADO + LEGENDADO (L)', isDual: true)
                                   else if (detailedItem.isSubtitledOnly)
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF7C4DFF).withOpacity(0.85),
-                                        borderRadius: BorderRadius.circular(4),
-                                      ),
-                                      child: const Text(
-                                        'LEGENDADO (L)',
-                                        style: TextStyle(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w900,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                    ),
+                                    buildAudioOptionBadge('LEGENDADO (L)')
+                                  else
+                                    buildAudioOptionBadge('DUBLADO'),
                                   Text(
                                     '★ ${detailedItem.rating != "N/A" ? detailedItem.rating : "8.4"}',
                                     style: const TextStyle(
@@ -1201,12 +1185,12 @@ class _MainDashboardState extends State<MainDashboard> {
                         ),
                       ],
                     ),
-                    if (savedProg != null) ...[
+                    if (activeProg != null) ...[
                       const SizedBox(height: 14),
                       ClipRRect(
                         borderRadius: BorderRadius.circular(4),
                         child: LinearProgressIndicator(
-                          value: savedProg.progress,
+                          value: activeProg.progress,
                           minHeight: 5,
                           color: const Color(0xFF00E5FF),
                           backgroundColor: Colors.white12,
@@ -1214,7 +1198,7 @@ class _MainDashboardState extends State<MainDashboard> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'Progresso salvo em ${savedProg.formattedPosition} (${savedProg.formattedRemaining})',
+                        'Progresso salvo em ${activeProg.formattedPosition} (${activeProg.formattedRemaining})',
                         style: const TextStyle(fontSize: 11, color: Color(0xFF00E5FF)),
                       ),
                     ],
@@ -1223,83 +1207,61 @@ class _MainDashboardState extends State<MainDashboard> {
                       spacing: 10,
                       runSpacing: 10,
                       children: [
-                        if (hasDualAudio) ...[
-                          // Botão 1: Assistir Dublado
-                          TVFocusableItem(
-                            autofocus: true,
-                            autoScroll: false,
-                            onSelect: () {
-                              Navigator.pop(ctx);
-                              _openFullScreen(detailedItem);
-                            },
-                            builder: (c, f) => AnimatedScale(
-                              scale: f ? 1.04 : 1.0,
-                              duration: const Duration(milliseconds: 120),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                                decoration: BoxDecoration(
-                                  color: f ? Colors.white : const Color(0xFF00E5FF),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  savedDubProg != null ? '▶ Continuar Dublado' : '▶ Assistir Dublado',
-                                  style: const TextStyle(
-                                    color: Colors.black,
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 13,
-                                  ),
+                        // Botão Principal: Dublado (ou versão única)
+                        TVFocusableItem(
+                          autofocus: true,
+                          autoScroll: false,
+                          onSelect: () {
+                            Navigator.pop(ctx);
+                            _openFullScreen(detailedItem);
+                          },
+                          builder: (c, f) => AnimatedScale(
+                            scale: f ? 1.05 : 1.0,
+                            duration: const Duration(milliseconds: 140),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                              decoration: BoxDecoration(
+                                color: f ? Colors.white : const Color(0xFF00E5FF),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                hasDual
+                                    ? '▶ Assistir Dublado'
+                                    : (detailedItem.isSubtitledOnly
+                                        ? '▶ Assistir Legendado (L)'
+                                        : '▶ Assistir Agora'),
+                                style: const TextStyle(
+                                  color: Colors.black,
+                                  fontWeight: FontWeight.w900,
+                                  fontSize: 13,
                                 ),
                               ),
                             ),
                           ),
-                          // Botão 2: Assistir Legendado (L)
+                        ),
+
+                        // Segundo Botão: Assistir Legendado (L) quando o filme possui as duas versões!
+                        if (hasDual)
                           TVFocusableItem(
                             autoScroll: false,
                             onSelect: () {
                               Navigator.pop(ctx);
-                              final subtitledVariant = detailedItem.copyWith(
-                                name: detailedItem.subtitledName ?? '${detailedItem.name} (L)',
-                                url: detailedItem.subtitledUrl!,
-                              );
-                              final customSubItem = StreamItem(
-                                id: subItemId,
-                                streamId: detailedItem.subtitledStreamId ?? detailedItem.streamId,
-                                tvgId: detailedItem.tvgId,
-                                name: subtitledVariant.name,
-                                cleanName: detailedItem.cleanName,
-                                seriesName: detailedItem.seriesName,
-                                seasonNumber: detailedItem.seasonNumber,
-                                episodeNumber: detailedItem.episodeNumber,
-                                qualityTag: detailedItem.qualityTag,
-                                group: detailedItem.group,
-                                logo: detailedItem.logo,
-                                url: detailedItem.subtitledUrl!,
-                                type: detailedItem.type,
-                                isAdult: detailedItem.isAdult,
-                                synopsis: detailedItem.synopsis,
-                                rating: detailedItem.rating,
-                                year: detailedItem.year,
-                                cast: detailedItem.cast,
-                                isSubtitledOnly: true,
-                              );
-                              _openFullScreen(customSubItem);
+                              _openFullScreen(detailedItem.toSubtitledVariant());
                             },
                             builder: (c, f) => AnimatedScale(
-                              scale: f ? 1.04 : 1.0,
-                              duration: const Duration(milliseconds: 120),
+                              scale: f ? 1.05 : 1.0,
+                              duration: const Duration(milliseconds: 140),
                               child: Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                                 decoration: BoxDecoration(
                                   color: f ? Colors.white : const Color(0xFF7C4DFF),
                                   borderRadius: BorderRadius.circular(10),
                                   border: Border.all(
-                                    color: f ? Colors.white : Colors.white24,
+                                    color: f ? Colors.white : const Color(0xFF00E5FF).withOpacity(0.5),
                                   ),
                                 ),
                                 child: Text(
-                                  savedSubProg != null
-                                      ? '▶ Continuar Legendado (L)'
-                                      : '▶ Assistir Legendado (L)',
+                                  '▶ Assistir Legendado (L)',
                                   style: TextStyle(
                                     color: f ? Colors.black : Colors.white,
                                     fontWeight: FontWeight.w900,
@@ -1309,40 +1271,7 @@ class _MainDashboardState extends State<MainDashboard> {
                               ),
                             ),
                           ),
-                        ] else ...[
-                          // Filme com apenas 1 versão disponível
-                          TVFocusableItem(
-                            autofocus: true,
-                            autoScroll: false,
-                            onSelect: () {
-                              Navigator.pop(ctx);
-                              _openFullScreen(detailedItem);
-                            },
-                            builder: (c, f) => AnimatedScale(
-                              scale: f ? 1.04 : 1.0,
-                              duration: const Duration(milliseconds: 120),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                                decoration: BoxDecoration(
-                                  color: f ? Colors.white : const Color(0xFF00E5FF),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  savedProg != null
-                                      ? '▶ Continuar / Assistir'
-                                      : (detailedItem.isSubtitledOnly
-                                          ? '▶ Assistir Legendado (L)'
-                                          : '▶ Assistir Agora'),
-                                  style: const TextStyle(
-                                    color: Colors.black,
-                                    fontWeight: FontWeight.w900,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
+
                         TVFocusableItem(
                           autoScroll: false,
                           onSelect: () {
@@ -1350,7 +1279,7 @@ class _MainDashboardState extends State<MainDashboard> {
                             setModal(() {});
                           },
                           builder: (c, f) => Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
                             decoration: BoxDecoration(
                               color: f ? Colors.white12 : Colors.transparent,
                               border: Border.all(
@@ -1359,7 +1288,7 @@ class _MainDashboardState extends State<MainDashboard> {
                               borderRadius: BorderRadius.circular(10),
                             ),
                             child: Text(
-                              isFav ? '★ Nos Favoritos' : '☆ Favoritar',
+                              isFav ? '★ Favorito' : '☆ Favoritar',
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5),
                             ),
                           ),
@@ -1368,7 +1297,7 @@ class _MainDashboardState extends State<MainDashboard> {
                           autoScroll: false,
                           onSelect: () => Navigator.pop(ctx),
                           builder: (c, f) => Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
                             decoration: BoxDecoration(
                               border: Border.all(color: f ? Colors.white : Colors.white12),
                               borderRadius: BorderRadius.circular(10),
@@ -1626,7 +1555,7 @@ class _MainDashboardState extends State<MainDashboard> {
   }
 
   // ===========================================================================
-  // JANELA DE PRÉ-VISUALIZAÇÃO 16:9 (REGRA BLINDADA DO PLAYER INTACTA)
+  // JANELA DE PRÉ-VISUALIZAÇÃO 16:9 (BLINDADA — DESACOPLA QUANDO EM TELA CHEIA)
   // ===========================================================================
   Widget _buildMiniVideo() {
     if (_engine.isFullScreenActive || activeSection != MainSection.live) {
@@ -1805,7 +1734,7 @@ class _MainDashboardState extends State<MainDashboard> {
                         const Padding(
                           padding: EdgeInsets.all(20),
                           child: Text(
-                            'UNEX VISION 2.0',
+                            'UNEX VISION 2.3',
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.w900,
