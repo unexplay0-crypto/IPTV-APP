@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'core.dart';
 
 // =============================================================================
-// 1. CONTROLE DE FOCO CIRÚRGICO PARA D-PAD (10-FOOT UI COM ROLAGEM SUAVE)
+// 1. CONTROLE DE FOCO CIRÚRGICO PARA D-PAD (10-FOOT UI COM ROLAGEM FLUIDA)
 // =============================================================================
 class TVFocusableItem extends StatefulWidget {
   final VoidCallback onSelect;
@@ -47,7 +47,7 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
           Scrollable.ensureVisible(
             context,
             alignment: 0.35,
-            duration: const Duration(milliseconds: 210),
+            duration: const Duration(milliseconds: 220),
             curve: Curves.easeOutCubic,
           );
         }
@@ -116,11 +116,11 @@ class TVIconButton extends StatelessWidget {
       autoScroll: false,
       onSelect: onPressed,
       builder: (context, isFocused) => AnimatedScale(
-        scale: isFocused ? 1.14 : 1.0,
-        duration: const Duration(milliseconds: 140),
+        scale: isFocused ? 1.15 : 1.0,
+        duration: const Duration(milliseconds: 150),
         curve: Curves.easeOutCubic,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
+          duration: const Duration(milliseconds: 150),
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
             color: isFocused ? const Color(0xFF00E5FF) : Colors.white.withOpacity(0.06),
@@ -142,7 +142,7 @@ class TVIconButton extends StatelessWidget {
 }
 
 // =============================================================================
-// 2. TECLADO VIRTUAL DE TV 2.0 (FOCO SEMPRE NA LETRA 'Q')
+// 2. TECLADO VIRTUAL DE TV 2.0 (FOCO NA LETRA 'Q', HTTP:// E '.' NA ÚLTIMA FILEIRA)
 // =============================================================================
 Future<void> showTVVirtualKeyboard(
   BuildContext context,
@@ -422,7 +422,7 @@ Widget _buildKeyboardKey({
 }
 
 // =============================================================================
-// 3. CONTROLE PARENTAL (+18) — DESBLOQUEIO E ALTERAÇÃO DE SENHA (PADRÃO 0000)
+// 3. CONTROLE PARENTAL (+18)
 // =============================================================================
 Future<bool> showParentalPinPrompt(
   BuildContext context, {
@@ -730,7 +730,7 @@ Future<void> showChangeParentalPinDialog(
 }
 
 // =============================================================================
-// 4. CARDS VISUAIS OTIMIZADOS (COM BADGE DUB/LEG E ANIMAÇÃO SUAVE)
+// 4. CARDS VISUAIS COM ANIMAÇÃO FLUIDA E SELO DUB / LEG
 // =============================================================================
 Widget buildStreamingPosterCard({
   required String title,
@@ -742,40 +742,41 @@ Widget buildStreamingPosterCard({
   bool isPlaying = false,
   bool isFavorite = false,
   bool isAdultLocked = false,
+  bool hasDualAudio = false,
+  bool isSubtitledOnly = false,
   double? progress,
   VoidCallback? onFavoriteTap,
-  String? audioBadgeText,
 }) {
   return AnimatedScale(
-    scale: isFocused ? 1.06 : 1.0,
-    duration: const Duration(milliseconds: 160),
+    scale: isFocused ? 1.07 : 1.0,
+    duration: const Duration(milliseconds: 190),
     curve: Curves.easeOutCubic,
     child: AnimatedContainer(
-      duration: const Duration(milliseconds: 160),
+      duration: const Duration(milliseconds: 190),
       curve: Curves.easeOutCubic,
       decoration: BoxDecoration(
         color: const Color(0xFF151928),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(13),
         border: Border.all(
           color: isFocused
               ? const Color(0xFF00E5FF)
               : isPlaying
                   ? const Color(0xFF7C4DFF)
                   : Colors.white12,
-          width: isFocused ? 2.6 : 1.2,
+          width: isFocused ? 2.8 : 1.2,
         ),
         boxShadow: isFocused
             ? [
                 BoxShadow(
-                  color: const Color(0xFF00E5FF).withOpacity(0.32),
-                  blurRadius: 14,
+                  color: const Color(0xFF00E5FF).withOpacity(0.36),
+                  blurRadius: 16,
                   spreadRadius: 1,
                 ),
               ]
             : null,
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(11),
         child: Stack(
           fit: StackFit.expand,
           children: [
@@ -804,7 +805,7 @@ Widget buildStreamingPosterCard({
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [Colors.black26, Colors.transparent, Colors.black87],
+                  colors: [Colors.black38, Colors.transparent, Colors.black87],
                   stops: [0.0, 0.42, 1.0],
                 ),
               ),
@@ -816,23 +817,12 @@ Widget buildStreamingPosterCard({
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   buildQualityBadge(badgeText),
-                  if (audioBadgeText != null && audioBadgeText.isNotEmpty) ...[
+                  if (hasDualAudio) ...[
                     const SizedBox(width: 4),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF7C4DFF).withOpacity(0.88),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        audioBadgeText,
-                        style: const TextStyle(
-                          fontSize: 8.5,
-                          fontWeight: FontWeight.w900,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
+                    buildAudioOptionBadge('DUB/LEG', isDual: true),
+                  ] else if (isSubtitledOnly) ...[
+                    const SizedBox(width: 4),
+                    buildAudioOptionBadge('LEG'),
                   ],
                 ],
               ),
@@ -893,6 +883,24 @@ Widget buildStreamingPosterCard({
             ),
           ],
         ),
+      ),
+    ),
+  );
+}
+
+Widget buildAudioOptionBadge(String label, {bool isDual = false}) {
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2.5),
+    decoration: BoxDecoration(
+      color: isDual ? const Color(0xFF7C4DFF).withOpacity(0.85) : Colors.amber.withOpacity(0.85),
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Text(
+      label,
+      style: TextStyle(
+        fontSize: 8.5,
+        fontWeight: FontWeight.w900,
+        color: isDual ? Colors.white : Colors.black,
       ),
     ),
   );
