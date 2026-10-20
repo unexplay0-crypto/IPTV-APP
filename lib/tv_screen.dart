@@ -70,6 +70,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   final FocusNode _sideMenuFocus = FocusNode();
   final FocusNode _firstPosterFocusNode = FocusNode();
   final ScrollController _vodScrollController = ScrollController();
+  final ScrollController _liveChannelsScrollController = ScrollController();
 
   StreamItem? _focusedVodItem;
   SeriesGroup? _focusedSeriesGroup;
@@ -84,18 +85,17 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   @override
   void initState() {
     super.initState();
-    _syncDefaultVodHero();
+    _syncInitialHeroItem();
   }
 
   @override
   void didUpdateWidget(covariant TVDashboardView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.activeSection != widget.activeSection ||
-        oldWidget.selectedCategory != widget.selectedCategory ||
+    if (oldWidget.selectedCategory != widget.selectedCategory ||
+        oldWidget.activeSection != widget.activeSection ||
         oldWidget.searchQuery != widget.searchQuery) {
-      _resetVodCarouselToStart();
-    } else {
-      _syncDefaultVodHero();
+      _syncInitialHeroItem();
+      _resetScrollPositions();
     }
   }
 
@@ -104,56 +104,40 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     _sideMenuFocus.dispose();
     _firstPosterFocusNode.dispose();
     _vodScrollController.dispose();
+    _liveChannelsScrollController.dispose();
     super.dispose();
   }
 
-  void _syncDefaultVodHero() {
+  void _syncInitialHeroItem() {
     if (widget.activeSection == MainSection.series) {
-      if (widget.displayedSeries.isNotEmpty &&
-          (_focusedSeriesGroup == null ||
-              !widget.displayedSeries.any((s) => s.id == _focusedSeriesGroup!.id))) {
-        _focusedSeriesGroup = widget.displayedSeries.first;
-      }
+      _focusedSeriesGroup = widget.displayedSeries.isNotEmpty ? widget.displayedSeries.first : null;
     } else if (widget.activeSection != MainSection.live) {
-      if (widget.displayedItems.isNotEmpty &&
-          (_focusedVodItem == null ||
-              !widget.displayedItems.any((i) => i.id == _focusedVodItem!.id))) {
-        _focusedVodItem = widget.displayedItems.first;
-      }
+      _focusedVodItem = widget.displayedItems.isNotEmpty ? widget.displayedItems.first : null;
     }
   }
 
-  void _resetVodCarouselToStart() {
-    if (widget.activeSection == MainSection.series) {
-      _focusedSeriesGroup =
-          widget.displayedSeries.isNotEmpty ? widget.displayedSeries.first : null;
-    } else if (widget.activeSection != MainSection.live) {
-      _focusedVodItem =
-          widget.displayedItems.isNotEmpty ? widget.displayedItems.first : null;
-    }
+  void _resetScrollPositions() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _vodScrollController.hasClients) {
+      if (_vodScrollController.hasClients) {
         _vodScrollController.jumpTo(0.0);
       }
+      if (_liveChannelsScrollController.hasClients) {
+        _liveChannelsScrollController.jumpTo(0.0);
+      }
     });
   }
 
-  /// Garante que ao apertar para baixo nas categorias de Filmes/Séries, o foco vá sempre para o 1º item da lista
+  /// Sempre que o usuário aperta para baixo na barra de categorias de Filmes/Séries,
+  /// rebobina o carrossel para o início e foca exatamente no 1º card da categoria!
   void _focusFirstPosterFromCategory() {
     if (_vodScrollController.hasClients) {
-      _vodScrollController.jumpTo(0.0);
+      _vodScrollController.animateTo(
+        0.0,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+      );
     }
-    setState(() {
-      if (widget.activeSection == MainSection.series) {
-        if (widget.displayedSeries.isNotEmpty) {
-          _focusedSeriesGroup = widget.displayedSeries.first;
-        }
-      } else {
-        if (widget.displayedItems.isNotEmpty) {
-          _focusedVodItem = widget.displayedItems.first;
-        }
-      }
-    });
+    _syncInitialHeroItem();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && _firstPosterFocusNode.canRequestFocus) {
         _firstPosterFocusNode.requestFocus();
@@ -195,17 +179,21 @@ class _TVDashboardViewState extends State<TVDashboardView> {
         lower.contains('erot');
   }
 
-  Future<void> _handleCategorySelect(String cat) async {
+  Future<void> _handleCategorySelect(String cat, {bool focusFirstVodAfter = false}) async {
     if (_isCategoryAdult(cat) && !_adultUnlocked) {
       final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
       if (!unlocked || !mounted) return;
       setState(() => _adultUnlocked = true);
     }
     widget.onSelectCategory(cat);
-    _resetVodCarouselToStart();
+    if (focusFirstVodAfter) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _focusFirstPosterFromCategory();
+      });
+    }
   }
 
-  // Pré-visualização só começa quando o usuário clica no canal (1º clique = Preview, 2º clique = Tela Cheia)
+  // Pré-visualização sob demanda: 1º clique inicia no mini-player; 2º clique expande para Tela Cheia
   Future<void> _handleChannelSelect(StreamItem item) async {
     if (item.isAdult && !_adultUnlocked) {
       final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
@@ -265,20 +253,20 @@ class _TVDashboardViewState extends State<TVDashboardView> {
       backgroundColor: _bgColor,
       body: Row(
         children: [
-          // 1. MENU LATERAL COM EXPANSÃO E RECOLHIMENTO SUAVE
+          // 1. MENU LATERAL COM EXPANSÃO E RECOLHIMENTO SUAVES (CURVA EASE-OUT-CUBIC)
           AnimatedContainer(
             duration: const Duration(milliseconds: 260),
             curve: Curves.easeOutCubic,
-            width: widget.isSideMenuOpen ? 235 : 64,
+            width: widget.isSideMenuOpen ? 235 : 62,
             decoration: BoxDecoration(
               color: _panelColor,
-              border: Border(right: BorderSide(color: Colors.white.withOpacity(0.06))),
+              border: Border(right: BorderSide(color: Colors.white.withOpacity(0.07))),
               boxShadow: widget.isSideMenuOpen
                   ? [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.55),
-                        blurRadius: 18,
-                        offset: const Offset(4, 0),
+                        color: Colors.black.withOpacity(0.65),
+                        blurRadius: 20,
+                        offset: const Offset(6, 0),
                       ),
                     ]
                   : null,
@@ -290,23 +278,23 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                 switchOutCurve: Curves.easeInCubic,
                 child: widget.isSideMenuOpen
                     ? SizedBox(
-                        key: const ValueKey('rail_expanded'),
+                        key: const ValueKey('menu_expanded'),
                         width: 235,
                         child: _buildExpandedMenu(),
                       )
                     : SizedBox(
-                        key: const ValueKey('rail_collapsed'),
-                        width: 64,
+                        key: const ValueKey('menu_collapsed'),
+                        width: 62,
                         child: _buildCollapsedRail(),
                       ),
               ),
             ),
           ),
 
-          // 2. TRANSIÇÃO FLUIDA ENTRE PÁGINAS (TV AO VIVO vs FILMES/SÉRIES)
+          // 2. CORPO PRINCIPAL COM TRANSIÇÃO FLUIDA ENTRE PÁGINAS/SEÇÕES
           Expanded(
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 260),
+              duration: const Duration(milliseconds: 280),
               switchInCurve: Curves.easeOutCubic,
               switchOutCurve: Curves.easeInCubic,
               transitionBuilder: (child, animation) {
@@ -333,7 +321,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   }
 
   // ===========================================================================
-  // MODO 1: TV AO VIVO (CATEGORIAS + 1 COLUNA LARGA DE CANAIS + PREVIEW)
+  // MODO 1: TV AO VIVO (1 COLUNA LARGA DE CANAIS COM NOME COMPLETO VISÍVEL)
   // ===========================================================================
   Widget _buildLiveTVLayout() {
     return Row(
@@ -413,7 +401,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                       onMoveLeft: _focusSideMenuNow,
                       onSelect: () => _handleCategorySelect(cat),
                       builder: (c, f) => AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
+                        duration: const Duration(milliseconds: 160),
                         curve: Curves.easeOutCubic,
                         margin: const EdgeInsets.symmetric(vertical: 3),
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
@@ -469,135 +457,138 @@ class _TVDashboardViewState extends State<TVDashboardView> {
           ),
         ),
 
-        // COLUNA 2: LISTA DE CANAIS EM 1 COLUNA ÚNICA LARGA (NOME COMPLETO VISÍVEL)
+        // COLUNA 2: LISTA EM 1 COLUNA ÚNICA LARGA (EXIBE O NOME INTEIRO DO CANAL)
         Expanded(
           child: Container(
             color: _panelColor.withOpacity(0.45),
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 220),
-              child: widget.displayedItems.isEmpty
-                  ? const Center(
-                      key: ValueKey('empty_channels'),
-                      child: Text(
-                        'Nenhum canal encontrado nesta categoria.',
-                        style: TextStyle(color: Colors.white54),
-                      ),
-                    )
-                  : ListView.builder(
-                      key: ValueKey('channel_list_${widget.selectedCategory}_${widget.searchQuery}'),
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-                      itemCount: widget.displayedItems.length,
-                      itemBuilder: (context, idx) {
-                        final item = widget.displayedItems[idx];
-                        final isPlaying = widget.activeItem?.id == item.id;
-                        final isFav = widget.favoriteIds.contains(item.id);
-                        final isLocked = item.isAdult && !_adultUnlocked;
+            child: widget.displayedItems.isEmpty
+                ? const Center(
+                    child: Text(
+                      'Nenhum canal encontrado nesta categoria.',
+                      style: TextStyle(color: Colors.white54),
+                    ),
+                  )
+                : ListView.builder(
+                    controller: _liveChannelsScrollController,
+                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+                    itemCount: widget.displayedItems.length,
+                    itemBuilder: (context, idx) {
+                      final item = widget.displayedItems[idx];
+                      final isPlaying = widget.activeItem?.id == item.id;
+                      final isFav = widget.favoriteIds.contains(item.id);
+                      final isLocked = item.isAdult && !_adultUnlocked;
+                      final channelNumber = (idx + 1).toString().padLeft(2, '0');
 
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: TVFocusableItem(
-                            onSelect: () => _handleChannelSelect(item),
-                            builder: (c, f) => AnimatedScale(
-                              scale: f ? 1.02 : 1.0,
-                              duration: const Duration(milliseconds: 140),
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: TVFocusableItem(
+                          onSelect: () => _handleChannelSelect(item),
+                          builder: (c, f) => AnimatedScale(
+                            scale: f ? 1.02 : 1.0,
+                            duration: const Duration(milliseconds: 150),
+                            curve: Curves.easeOutCubic,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 160),
                               curve: Curves.easeOutCubic,
-                              child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 150),
-                                curve: Curves.easeOutCubic,
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                                decoration: BoxDecoration(
-                                  color: isPlaying ? _accentColor.withOpacity(0.15) : _cardColor,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: f
-                                        ? _accentColor
-                                        : isPlaying
-                                            ? _secondaryAccent
-                                            : Colors.white.withOpacity(0.06),
-                                    width: f ? 2.4 : 1.2,
-                                  ),
-                                  boxShadow: f
-                                      ? [
-                                          BoxShadow(
-                                            color: _accentColor.withOpacity(0.22),
-                                            blurRadius: 12,
-                                          ),
-                                        ]
-                                      : null,
+                              height: 74,
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: isPlaying ? _accentColor.withOpacity(0.16) : _cardColor,
+                                borderRadius: BorderRadius.circular(13),
+                                border: Border.all(
+                                  color: f
+                                      ? _accentColor
+                                      : isPlaying
+                                          ? _secondaryAccent
+                                          : Colors.white.withOpacity(0.06),
+                                  width: f ? 2.4 : 1.2,
                                 ),
-                                child: Row(
-                                  children: [
-                                    // Número do Canal
-                                    Container(
-                                      width: 42,
-                                      alignment: Alignment.center,
-                                      padding: const EdgeInsets.symmetric(vertical: 6),
-                                      decoration: BoxDecoration(
-                                        color: isPlaying
-                                            ? _accentColor
-                                            : Colors.white.withOpacity(0.06),
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                      child: Text(
-                                        '${idx + 1}',
-                                        style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w900,
-                                          color: isPlaying ? Colors.black : Colors.white70,
+                                boxShadow: f
+                                    ? [
+                                        BoxShadow(
+                                          color: _accentColor.withOpacity(0.22),
+                                          blurRadius: 12,
                                         ),
+                                      ]
+                                    : null,
+                              ),
+                              child: Row(
+                                children: [
+                                  // Número do canal
+                                  Container(
+                                    width: 34,
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      channelNumber,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w900,
+                                        color: f || isPlaying ? _accentColor : Colors.white38,
                                       ),
                                     ),
-                                    const SizedBox(width: 12),
-                                    // Logo do Canal
-                                    buildChannelLogo(item.logo, size: 48, isLocked: isLocked),
-                                    const SizedBox(width: 14),
-                                    // Nome Completo do Canal + Grupo / Status
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          Text(
-                                            item.name,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              fontSize: 15,
-                                              fontWeight: FontWeight.w900,
-                                              color: f || isPlaying ? Colors.white : Colors.white.withOpacity(0.92),
-                                            ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  buildChannelLogo(item.logo, size: 48, isLocked: isLocked),
+                                  const SizedBox(width: 14),
+                                  // Espaço amplo para exibir o nome completo do canal
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Text(
+                                          item.name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w900,
+                                            color: isPlaying ? _accentColor : Colors.white,
                                           ),
-                                          const SizedBox(height: 4),
-                                          Text(
-                                            isPlaying
-                                                ? '▶ Reproduzindo na Pré-visualização • Aperte OK para Tela Cheia'
-                                                : item.group,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                              fontSize: 11.5,
-                                              color: isPlaying ? _accentColor : Colors.white54,
-                                              fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
+                                        ),
+                                        const SizedBox(height: 5),
+                                        Row(
+                                          children: [
+                                            buildQualityBadge(item.qualityTag),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                isPlaying
+                                                    ? '▶ No Ar na Pré-visualização • Pressione OK para Tela Cheia'
+                                                    : item.group,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  fontSize: 11.5,
+                                                  color: isPlaying ? _accentColor : Colors.white54,
+                                                  fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
+                                                ),
+                                              ),
                                             ),
-                                          ),
-                                        ],
-                                      ),
+                                          ],
+                                        ),
+                                      ],
                                     ),
-                                    const SizedBox(width: 12),
-                                    if (isFav) ...[
-                                      const Icon(Icons.star_rounded, color: Colors.amber, size: 18),
-                                      const SizedBox(width: 8),
-                                    ],
-                                    buildQualityBadge(item.qualityTag),
-                                  ],
-                                ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  if (isFav)
+                                    const Padding(
+                                      padding: EdgeInsets.only(right: 8),
+                                      child: Icon(Icons.star_rounded, color: Colors.amber, size: 18),
+                                    ),
+                                  Icon(
+                                    isPlaying ? Icons.fullscreen_rounded : Icons.play_circle_outline_rounded,
+                                    color: f || isPlaying ? _accentColor : Colors.white24,
+                                    size: 22,
+                                  ),
+                                ],
                               ),
                             ),
                           ),
-                        );
-                      },
-                    ),
-            ),
+                        ),
+                      );
+                    },
+                  ),
           ),
         ),
 
@@ -738,7 +729,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                     onSelect: () => _handleFullScreen(widget.activeItem!),
                     builder: (c, f) => AnimatedScale(
                       scale: f ? 1.04 : 1.0,
-                      duration: const Duration(milliseconds: 120),
+                      duration: const Duration(milliseconds: 140),
                       child: Container(
                         padding: const EdgeInsets.symmetric(vertical: 12),
                         decoration: BoxDecoration(
@@ -752,7 +743,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                               color: Colors.black,
                               fontWeight: FontWeight.w900,
                               fontSize: 12.5,
-                              letterSpacing: 1.0,
+                              letterSpacing: 1.1,
                             ),
                           ),
                         ),
@@ -841,38 +832,38 @@ class _TVDashboardViewState extends State<TVDashboardView> {
         : (_focusedVodItem?.synopsis != 'Nenhuma sinopse disponível.' &&
                 _focusedVodItem?.synopsis != null
             ? _focusedVodItem!.synopsis
-            : 'Pressione OK no pôster para abrir as opções de áudio (Dublado / Legendado), sinopse completa ou iniciar o filme.');
+            : 'Pressione OK no pôster para abrir as opções de áudio (Dublado / Legendado), sinopse e iniciar.');
     final badge = isSeries ? _focusedSeriesGroup?.qualityTag : _focusedVodItem?.qualityTag;
     final rating = isSeries ? _focusedSeriesGroup?.rating : _focusedVodItem?.rating;
     final groupName = isSeries ? _focusedSeriesGroup?.group : _focusedVodItem?.group;
     final hasDualAudio = !isSeries && (_focusedVodItem?.hasBothAudioOptions ?? false);
+    final isSubOnly = !isSeries && (_focusedVodItem?.isSubtitledOnly ?? false);
 
     return Stack(
       fit: StackFit.expand,
       children: [
-        // 1. BACKDROP PANORÂMICO COM CROSSFADE SUAVE
-        Positioned(
-          top: 0,
-          left: 0,
-          right: 0,
-          height: MediaQuery.of(context).size.height * 0.72,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 280),
-            child: (bgUrl != null && bgUrl.isNotEmpty && !isFocusedAdultLocked)
-                ? Image.network(
-                    bgUrl,
-                    key: ValueKey('backdrop_$bgUrl'),
-                    width: double.infinity,
-                    fit: BoxFit.cover,
-                    alignment: Alignment.topCenter,
-                    cacheWidth: 640,
-                    errorBuilder: (_, __, ___) => Container(color: _bgColor),
-                  )
-                : Container(key: const ValueKey('backdrop_empty'), color: _bgColor),
+        // 1. BACKDROP COM TRANSIÇÃO SUAVE DE IMAGEM
+        if (bgUrl != null && bgUrl.isNotEmpty && !isFocusedAdultLocked)
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: MediaQuery.of(context).size.height * 0.72,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 320),
+              child: SizedBox.expand(
+                key: ValueKey('backdrop_$bgUrl'),
+                child: Image.network(
+                  bgUrl,
+                  fit: BoxFit.cover,
+                  alignment: Alignment.topCenter,
+                  cacheWidth: 640,
+                  errorBuilder: (_, __, ___) => Container(color: _bgColor),
+                ),
+              ),
+            ),
           ),
-        ),
 
-        // VIGNETTE EM GRADIENTE PROFUNDO
         Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -888,11 +879,11 @@ class _TVDashboardViewState extends State<TVDashboardView> {
           ),
         ),
 
-        // 2. CONTEÚDO: BARRA DE CATEGORIAS + HERO BANNER + CARROSSEL DE PÔSTERES
+        // 2. BARRA DE CATEGORIAS + HERO BANNER + CARROSSEL
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Barra Superior de Pesquisa e Categorias (Seta p/ baixo leva sempre ao 1º item da categoria!)
+            // Barra Superior de Pesquisa e Categorias (Aperte Para Baixo = Vai sempre p/ o 1º Filme/Série!)
             Padding(
               padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
               child: SizedBox(
@@ -949,15 +940,14 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                           return Padding(
                             padding: const EdgeInsets.only(right: 8),
                             child: TVFocusableItem(
-                              autoScroll: false,
+                              autoScroll: true,
                               onMoveLeft: idx == 0 && widget.searchController == null
                                   ? _focusSideMenuNow
                                   : null,
-                              // Ao apertar para baixo no controle remoto, vai direto para o 1º filme/série da categoria!
                               onMoveDown: _focusFirstPosterFromCategory,
-                              onSelect: () => _handleCategorySelect(cat),
+                              onSelect: () => _handleCategorySelect(cat, focusFirstVodAfter: false),
                               builder: (c, f) => AnimatedContainer(
-                                duration: const Duration(milliseconds: 140),
+                                duration: const Duration(milliseconds: 150),
                                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                                 decoration: BoxDecoration(
                                   color: isSel
@@ -966,7 +956,10 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                                           ? Colors.white24
                                           : _panelColor.withOpacity(0.85),
                                   borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(color: f ? Colors.white : Colors.white12),
+                                  border: Border.all(
+                                    color: f ? Colors.white : Colors.white12,
+                                    width: f ? 2 : 1,
+                                  ),
                                 ),
                                 child: Text(
                                   cat,
@@ -987,14 +980,22 @@ class _TVDashboardViewState extends State<TVDashboardView> {
               ),
             ),
 
-            // HERO BANNER CENTRAL COM TRANSIÇÃO SUAVE
+            // HERO BANNER CENTRAL COM ANIMAÇÃO SUAVE DE TEXTO
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(36, 16, 36, 0),
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 220),
                   switchInCurve: Curves.easeOutCubic,
-                  switchOutCurve: Curves.easeInCubic,
+                  layoutBuilder: (currentChild, previousChildren) {
+                    return Stack(
+                      alignment: Alignment.bottomLeft,
+                      children: [
+                        ...previousChildren,
+                        if (currentChild != null) currentChild,
+                      ],
+                    );
+                  },
                   child: Column(
                     key: ValueKey('hero_$title'),
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1005,21 +1006,10 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                           if (badge != null) buildQualityBadge(badge),
                           if (hasDualAudio) ...[
                             const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
-                              decoration: BoxDecoration(
-                                color: _secondaryAccent.withOpacity(0.85),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: const Text(
-                                'DUBLADO + LEGENDADO (L)',
-                                style: TextStyle(
-                                  fontSize: 9.5,
-                                  fontWeight: FontWeight.w900,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            ),
+                            buildAudioOptionBadge('DUBLADO + LEGENDADO (L)', isDual: true),
+                          ] else if (isSubOnly) ...[
+                            const SizedBox(width: 8),
+                            buildAudioOptionBadge('LEGENDADO (L)'),
                           ],
                           if (rating != null && rating != 'N/A' && rating.isNotEmpty) ...[
                             const SizedBox(width: 10),
@@ -1078,7 +1068,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
               ),
             ),
 
-            // CARROSSEL DE PÔSTERES VINCULADO AO SCROLL CONTROLLER E FOCUS NODE DO 1º ITEM
+            // CARROSSEL DE PÔSTERES (SEMPRE COMEÇA NO ITEM 0 DA CATEGORIA SELECIONADA)
             SizedBox(
               height: 265,
               child: isSeries
@@ -1132,12 +1122,9 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                           itemBuilder: (context, idx) {
                             final item = widget.displayedItems[idx];
                             final isFav = widget.favoriteIds.contains(item.id);
-                            final prog = widget.vodProgressMap[item.id];
+                            final prog = widget.vodProgressMap[item.id] ??
+                                widget.vodProgressMap['${item.id}_leg'];
                             final locked = item.isAdult && !_adultUnlocked;
-                            final audioTag = item.hasBothAudioOptions
-                                ? 'DUB/LEG'
-                                : (item.isSubtitledOnly ? 'LEG' : null);
-
                             return TVFocusableItem(
                               focusNode: idx == 0 ? _firstPosterFocusNode : null,
                               autofocus: idx == 0 && !widget.isSideMenuOpen,
@@ -1154,10 +1141,11 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                                       subtitle: item.group,
                                       logoUrl: item.logo,
                                       badgeText: item.qualityTag,
-                                      audioBadgeText: audioTag,
                                       isFocused: f,
                                       isFavorite: isFav,
                                       isAdultLocked: locked,
+                                      hasDualAudio: item.hasBothAudioOptions,
+                                      isSubtitledOnly: item.isSubtitledOnly,
                                       progress: prog?.progress,
                                       onTap: () => _handleVodSelect(item),
                                     ),
@@ -1203,7 +1191,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
             WidgetsBinding.instance.addPostFrameCallback((_) => _focusSideMenuNow());
           }
           return AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
+            duration: const Duration(milliseconds: 160),
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
               color: sel ? _accentColor.withOpacity(0.2) : Colors.transparent,
@@ -1224,6 +1212,8 @@ class _TVDashboardViewState extends State<TVDashboardView> {
           padding: const EdgeInsets.only(left: 8, bottom: 18),
           child: Text(
             'UNEX VISION',
+            maxLines: 1,
+            overflow: TextOverflow.clip,
             style: TextStyle(
               fontWeight: FontWeight.w900,
               color: _accentColor,
@@ -1252,7 +1242,8 @@ class _TVDashboardViewState extends State<TVDashboardView> {
             widget.onCloseSideMenu();
             showChangeParentalPinDialog(context, deviceMode: DeviceMode.tv);
           },
-          builder: (c, f) => Container(
+          builder: (c, f) => AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             margin: const EdgeInsets.symmetric(vertical: 3),
             decoration: BoxDecoration(
@@ -1264,7 +1255,12 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                 Icon(Icons.lock_person_rounded, size: 20, color: Colors.white70),
                 SizedBox(width: 12),
                 Expanded(
-                  child: Text('Senha Parental', style: TextStyle(fontSize: 12.5, color: Colors.white)),
+                  child: Text(
+                    'Senha Parental',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12.5, color: Colors.white),
+                  ),
                 ),
               ],
             ),
@@ -1277,7 +1273,8 @@ class _TVDashboardViewState extends State<TVDashboardView> {
               widget.onCloseSideMenu();
               widget.onRefreshPlaylist!();
             },
-            builder: (c, f) => Container(
+            builder: (c, f) => AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               margin: const EdgeInsets.symmetric(vertical: 3),
               decoration: BoxDecoration(
@@ -1289,7 +1286,12 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                   Icon(Icons.refresh_rounded, size: 20, color: Colors.white70),
                   SizedBox(width: 12),
                   Expanded(
-                    child: Text('Atualizar Lista', style: TextStyle(fontSize: 12.5, color: Colors.white)),
+                    child: Text(
+                      'Atualizar Lista',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12.5, color: Colors.white),
+                    ),
                   ),
                 ],
               ),
@@ -1299,7 +1301,8 @@ class _TVDashboardViewState extends State<TVDashboardView> {
           TVFocusableItem(
             onMoveRight: widget.onCloseSideMenu,
             onSelect: widget.onLogout!,
-            builder: (c, f) => Container(
+            builder: (c, f) => AnimatedContainer(
+              duration: const Duration(milliseconds: 150),
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               margin: const EdgeInsets.symmetric(vertical: 3),
               decoration: BoxDecoration(
@@ -1313,7 +1316,13 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                   Expanded(
                     child: Text(
                       'Trocar Conta',
-                      style: TextStyle(fontSize: 12.5, color: Colors.redAccent, fontWeight: FontWeight.bold),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: Colors.redAccent,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ],
@@ -1332,7 +1341,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
       onMoveRight: widget.onCloseSideMenu,
       onSelect: () => widget.onSelectSection(section),
       builder: (c, f) => AnimatedContainer(
-        duration: const Duration(milliseconds: 140),
+        duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         margin: const EdgeInsets.symmetric(vertical: 3),
         decoration: BoxDecoration(
