@@ -42,7 +42,7 @@ class UnexHttpOverrides extends HttpOverrides {
 }
 
 // =============================================================================
-// 1. MODELOS DE DADOS (COM SUPORTE A UNIFICAÇÃO DUBLADO + LEGENDADO '(L)')
+// 1. MODELOS DE DADOS (COM SUPORTE A UNIFICAÇÃO DUBLADO + LEGENDADO)
 // =============================================================================
 class StreamItem {
   final String id;
@@ -64,7 +64,7 @@ class StreamItem {
   final String year;
   final String cast;
 
-  // Campos para unificação de versão Legendada (L)
+  // Campos para Unificação de Filme Dublado + Legendado (L)
   final String? subtitledUrl;
   final String? subtitledStreamId;
   final String? subtitledName;
@@ -95,7 +95,36 @@ class StreamItem {
     this.isSubtitledOnly = false,
   });
 
-  bool get hasBothAudioOptions => subtitledUrl != null && subtitledUrl!.isNotEmpty;
+  /// Retorna true quando o filme possui tanto a opção Dublada quanto a Legendada (L)
+  bool get hasBothAudioOptions => subtitledUrl != null && subtitledUrl!.trim().isNotEmpty;
+
+  /// Gera o StreamItem configurado para tocar a versão Legendada (L)
+  StreamItem toSubtitledVariant() {
+    if (!hasBothAudioOptions) return this;
+    return StreamItem(
+      id: '${id}_leg',
+      streamId: (subtitledStreamId != null && subtitledStreamId!.isNotEmpty)
+          ? subtitledStreamId!
+          : streamId,
+      tvgId: tvgId,
+      name: subtitledName ?? '$name (L)',
+      cleanName: cleanName,
+      seriesName: seriesName,
+      seasonNumber: seasonNumber,
+      episodeNumber: episodeNumber,
+      qualityTag: qualityTag,
+      group: group,
+      logo: logo,
+      url: subtitledUrl!,
+      type: type,
+      isAdult: isAdult,
+      synopsis: synopsis,
+      rating: rating,
+      year: year,
+      cast: cast,
+      isSubtitledOnly: true,
+    );
+  }
 
   StreamItem copyWith({
     String? name,
@@ -281,112 +310,121 @@ class SeriesGroup {
 }
 
 // =============================================================================
-// UNIFICADOR AUTOMÁTICO DE FILMES DUBLADOS E LEGENDADOS '(L)'
+// UNIFICADOR AUTOMÁTICO DE FILMES DUBLADOS E LEGENDADOS (L)
 // =============================================================================
-final RegExp _kSubtitledMarkerRegex = RegExp(
-  r'(\(\s*[lL]\s*\)|\[\s*[lL]\s*\]|\(\s*leg(?:endado)?\s*\)|\[\s*leg(?:endado)?\s*\]|\blegendado\b)',
+final RegExp _subtitledMarkerRegex = RegExp(
+  r'(\(\s*L\s*\)|\[\s*L\s*\]|\(\s*LEG\s*\)|\[\s*LEG\s*\]|\(\s*LEGENDADO\s*\)|\bLEGENDADO\b)',
   caseSensitive: false,
 );
 
-final RegExp _kDubbedMarkerRegex = RegExp(
-  r'(\(\s*dub(?:lado)?\s*\)|\[\s*dub(?:lado)?\s*\]|\bdublado\b)',
+final RegExp _dubbedMarkerRegex = RegExp(
+  r'(\(\s*DUB\s*\)|\[\s*DUB\s*\]|\(\s*DUBLADO\s*\)|\bDUBLADO\b)',
   caseSensitive: false,
 );
 
-final RegExp _kQualityStripRegex = RegExp(
-  r'\b(4K|UHD|FHD|1080P|HD|720P|SD|H265|HEVC)\b',
+final RegExp _qualityCleanRegex = RegExp(
+  r'\b(4K|UHD|FHD|1080P|HD|720P|SD|CAM|TS|WEB-DL|WEBRIP|BLURAY)\b',
   caseSensitive: false,
 );
 
-class _MovieLanguageBucket {
-  final List<StreamItem> dubbed = [];
-  final List<StreamItem> subtitled = [];
+bool isMovieSubtitledByName(String name, String group) {
+  if (_subtitledMarkerRegex.hasMatch(name)) return true;
+  final g = group.toLowerCase();
+  if (g.contains('legendado') || g.endsWith('(l)')) return true;
+  return false;
 }
 
-String _normalizeMovieTitleKey(String rawTitle) {
-  String s = rawTitle
-      .replaceAll(_kSubtitledMarkerRegex, ' ')
-      .replaceAll(_kDubbedMarkerRegex, ' ')
-      .replaceAll(_kQualityStripRegex, ' ')
+String normalizeMovieTitleForMatching(String rawName) {
+  return rawName
+      .replaceAll(_subtitledMarkerRegex, ' ')
+      .replaceAll(_dubbedMarkerRegex, ' ')
+      .replaceAll(_qualityCleanRegex, ' ')
       .replaceAll(RegExp(r'[\[\]\(\)\-\|\:\._]'), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim()
       .toLowerCase();
-  return s.isEmpty ? rawTitle.trim().toLowerCase() : s;
 }
 
-String _cleanSubtitledDisplayTitle(String rawTitle) {
-  final cleaned = rawTitle
-      .replaceAll(_kSubtitledMarkerRegex, '')
-      .replaceAll(_kDubbedMarkerRegex, '')
-      .replaceAll(RegExp(r'\s{2,}'), ' ')
+String cleanMovieDisplayTitle(String rawName) {
+  return rawName
+      .replaceAll(_subtitledMarkerRegex, '')
+      .replaceAll(_dubbedMarkerRegex, '')
+      .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
-  return cleaned.isEmpty ? rawTitle.trim() : cleaned;
 }
 
+/// Unifica os filmes que possuem versão Dublada e versão Legendada (L) em um único item
 List<StreamItem> unifyMoviesByLanguage(List<StreamItem> items) {
   final List<StreamItem> nonMovies = [];
-  final Map<String, _MovieLanguageBucket> movieBuckets = {};
-  final List<String> keyOrder = [];
+  final List<StreamItem> rawMovies = [];
 
   for (final item in items) {
-    if (item.type != ContentType.movie) {
-      nonMovies.add(item);
-      continue;
-    }
-
-    final isSub = _kSubtitledMarkerRegex.hasMatch(item.name) ||
-        item.group.toLowerCase().contains('legendado');
-    final normKey = _normalizeMovieTitleKey(item.name);
-
-    final bucket = movieBuckets.putIfAbsent(normKey, () {
-      keyOrder.add(normKey);
-      return _MovieLanguageBucket();
-    });
-
-    if (isSub) {
-      bucket.subtitled.add(item);
+    if (item.type == ContentType.movie) {
+      rawMovies.add(item);
     } else {
-      bucket.dubbed.add(item);
+      nonMovies.add(item);
+    }
+  }
+
+  if (rawMovies.isEmpty) return items;
+
+  // Mapeia todas as versões Dubladas e Legendadas pela chave normalizada do título
+  final Map<String, StreamItem> dubbedByNormKey = {};
+  final Map<String, StreamItem> subtitledByNormKey = {};
+
+  for (final m in rawMovies) {
+    final key = normalizeMovieTitleForMatching(m.name);
+    if (key.isEmpty) continue;
+    final isSub = isMovieSubtitledByName(m.name, m.group);
+    if (isSub) {
+      subtitledByNormKey.putIfAbsent(key, () => m);
+    } else {
+      dubbedByNormKey.putIfAbsent(key, () => m);
     }
   }
 
   final List<StreamItem> unifiedMovies = [];
+  final Set<String> emittedPairInGroup = {};
 
-  for (final key in keyOrder) {
-    final bucket = movieBuckets[key]!;
-    final int pairCount = bucket.dubbed.length < bucket.subtitled.length
-        ? bucket.dubbed.length
-        : bucket.subtitled.length;
+  for (final m in rawMovies) {
+    final key = normalizeMovieTitleForMatching(m.name);
+    if (key.isEmpty) {
+      unifiedMovies.add(m);
+      continue;
+    }
 
-    // 1. Casa cada versão Dublada com sua versão Legendada (L) em um único item
-    for (int i = 0; i < pairCount; i++) {
-      final dub = bucket.dubbed[i];
-      final sub = bucket.subtitled[i];
-      final displayTitle = _cleanSubtitledDisplayTitle(dub.name);
+    final isSub = isMovieSubtitledByName(m.name, m.group);
+    final hasDub = dubbedByNormKey.containsKey(key);
+    final hasSub = subtitledByNormKey.containsKey(key);
+
+    if (hasDub && hasSub) {
+      // Se existe versão Dublada e versão Legendada (L), ocultamos a entrada duplicada (L)
+      // e anexamos o link Legendado diretamente dentro do card principal do filme!
+      if (isSub) {
+        continue;
+      }
+      final groupDedupeKey = '${m.group.toLowerCase()}|$key';
+      if (emittedPairInGroup.contains(groupDedupeKey)) continue;
+      emittedPairInGroup.add(groupDedupeKey);
+
+      final subItem = subtitledByNormKey[key]!;
+      final displayTitle = cleanMovieDisplayTitle(m.name);
       unifiedMovies.add(
-        dub.copyWith(
-          name: displayTitle,
-          cleanName: displayTitle,
-          subtitledUrl: sub.url,
-          subtitledStreamId: sub.streamId,
-          subtitledName: sub.name,
+        m.copyWith(
+          name: displayTitle.isNotEmpty ? displayTitle : m.name,
+          cleanName: displayTitle.isNotEmpty ? displayTitle : m.cleanName,
+          subtitledUrl: subItem.url,
+          subtitledStreamId: subItem.streamId,
+          subtitledName: subItem.name,
           isSubtitledOnly: false,
         ),
       );
-    }
-
-    // 2. Mantém versões apenas Dubladas restantes
-    for (int i = pairCount; i < bucket.dubbed.length; i++) {
-      unifiedMovies.add(bucket.dubbed[i]);
-    }
-
-    // 3. Mantém versões apenas Legendadas (L) que não possuem par dublado
-    for (int i = pairCount; i < bucket.subtitled.length; i++) {
-      final subOnly = bucket.subtitled[i];
-      unifiedMovies.add(
-        subOnly.copyWith(isSubtitledOnly: true),
-      );
+    } else if (isSub) {
+      // Filme existe apenas na versão Legendada (L)
+      unifiedMovies.add(m.copyWith(isSubtitledOnly: true));
+    } else {
+      // Filme existe apenas na versão Dublada
+      unifiedMovies.add(m);
     }
   }
 
@@ -398,13 +436,13 @@ List<StreamItem> unifyMoviesByLanguage(List<StreamItem> items) {
 // =============================================================================
 class AppStorage {
   static String get _tmp => Directory.systemTemp.path;
-  static File get _sessionFile => File('$_tmp/unex_v23_session.json');
-  static File get _deviceFile => File('$_tmp/unex_v23_device.json');
-  static File get _vodProgressFile => File('$_tmp/unex_v23_vod_progress.json');
-  static File get _favoritesFile => File('$_tmp/unex_v23_favorites.json');
-  static File get _recentsFile => File('$_tmp/unex_v23_recents.json');
+  static File get _sessionFile => File('$_tmp/unex_v22_session.json');
+  static File get _deviceFile => File('$_tmp/unex_v22_device.json');
+  static File get _vodProgressFile => File('$_tmp/unex_v22_vod_progress.json');
+  static File get _favoritesFile => File('$_tmp/unex_v22_favorites.json');
+  static File get _recentsFile => File('$_tmp/unex_v22_recents.json');
   static File get _offlinePlaylistFile => File('$_tmp/unex_v23_offline_playlist.json');
-  static File get _parentalPinFile => File('$_tmp/unex_v23_parental_pin.txt');
+  static File get _parentalPinFile => File('$_tmp/unex_v22_parental_pin.txt');
 
   static Future<DeviceMode> getOrDetectDeviceMode() async {
     try {
@@ -561,7 +599,7 @@ List<StreamItem> _decodePlaylistIsolate(String raw) =>
     (jsonDecode(raw) as List).map((e) => StreamItem.fromJson(e)).toList();
 
 // =============================================================================
-// 3. MOTOR DE VÍDEO COMPARTILHADO (BLINDADO — INALTERADO)
+// 3. MOTOR DE VÍDEO COMPARTILHADO (BLINDADO E INTOCADO — SURFACEVIEW + FALLBACK)
 // =============================================================================
 class _StreamAttempt {
   final String url;
@@ -604,7 +642,6 @@ class SharedStreamEngine extends ChangeNotifier {
 
   void Function(VodProgressEntry entry)? onVodProgressSaved;
 
-  /// Ativa ou desativa o modo de Tela Cheia para isolar a superfície de vídeo única na TV
   void setFullScreenActive(bool active) {
     if (isFullScreenActive != active) {
       isFullScreenActive = active;
@@ -612,7 +649,6 @@ class SharedStreamEngine extends ChangeNotifier {
     }
   }
 
-  /// Segue redirecionamentos HTTP 301/302/307/308 sem consumir a conexão do vídeo
   Future<String> _resolveRedirectLocationOnly(String rawUrl, Map<String, String> headers) async {
     try {
       Uri currentUri = Uri.parse(rawUrl);
@@ -786,7 +822,6 @@ class SharedStreamEngine extends ChangeNotifier {
   }) async {
     if (!forceReload &&
         currentItem?.id == item.id &&
-        currentItem?.url == item.url &&
         controller != null &&
         isReady &&
         !hasError) {
@@ -1035,7 +1070,7 @@ class SharedStreamEngine extends ChangeNotifier {
 }
 
 // =============================================================================
-// 4. SERVIÇO DE CATÁLOGO XTREAM CODES API + M3U (COM UNIFICAÇÃO DE '(L)')
+// 4. SERVIÇO DE CATÁLOGO XTREAM CODES API + UNIFICAÇÃO DE IDIOMAS + M3U
 // =============================================================================
 class CatalogBundle {
   final List<StreamItem> allItems;
@@ -1429,18 +1464,18 @@ CatalogBundle _parseXtreamJsonIsolate(Map<String, String> payload) {
     }
   } catch (_) {}
 
-  // Unifica automaticamente filmes Dublados e Legendados (L)
-  final unifiedItems = unifyMoviesByLanguage(rawItems);
+  // Unifica os filmes que possuem versão Dublada e versão Legendada (L)
+  final unifiedAllItems = unifyMoviesByLanguage(rawItems);
 
   return CatalogBundle(
-    allItems: unifiedItems,
+    allItems: unifiedAllItems,
     seriesGroups: seriesGroups,
     resolvedStreamBaseUrl: dns,
   );
 }
 
 // =============================================================================
-// 5. PARSER M3U EM BACKGROUND (COM UNIFICAÇÃO DE FILMES DUBLADOS / LEGENDADOS)
+// 5. PARSER M3U EM BACKGROUND (COM UNIFICAÇÃO AUTOMÁTICA DUBLADO + LEGENDADO)
 // =============================================================================
 List<StreamItem> parseM3UAdvanced(String raw) {
   final List<StreamItem> result = [];
@@ -1537,7 +1572,6 @@ List<StreamItem> parseM3UAdvanced(String raw) {
       tvgId = '';
     }
   }
-
   return unifyMoviesByLanguage(result);
 }
 
@@ -1584,12 +1618,12 @@ Future<void> applyDeviceOrientation(DeviceMode mode) async {
 }
 
 // =============================================================================
-// 6. TRANSIÇÕES DE NAVEGAÇÃO FLUIDAS E EXPANSÃO DO PLAYER
+// 6. TRANSIÇÕES FLUIDAS ENTRE TELAS E EXPANSÃO DO MINI-PLAYER P/ TELA CHEIA
 // =============================================================================
 Route<T> createSmoothRoute<T>(Widget page) {
   return PageRouteBuilder<T>(
     transitionDuration: const Duration(milliseconds: 280),
-    reverseTransitionDuration: const Duration(milliseconds: 220),
+    reverseTransitionDuration: const Duration(milliseconds: 240),
     pageBuilder: (context, animation, secondaryAnimation) => page,
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
       final curved = CurvedAnimation(
@@ -1614,11 +1648,15 @@ Route<T> createSmoothRoute<T>(Widget page) {
   );
 }
 
-/// Animação fluida de expansão da janela de pré-visualização até a Tela Cheia (e encolhimento ao voltar)
-Route<T> createPlayerExpandRoute<T>(Widget page, {required DeviceMode mode}) {
-  final originAlignment = mode == DeviceMode.tv
-      ? const Alignment(0.74, -0.24) // Ancorado na janela de pré-visualização à direita na TV
-      : const Alignment(0.0, -0.68); // Ancorado na pré-visualização superior no Celular
+/// Animação fluida que expande a janela de pré-visualização até a tela cheia e encolhe de volta ao fechar
+Route<T> createPlayerExpandRoute<T>(
+  Widget page, {
+  required DeviceMode deviceMode,
+  bool fromPreviewDock = false,
+}) {
+  final Alignment originAlignment = fromPreviewDock
+      ? (deviceMode == DeviceMode.tv ? const Alignment(0.75, -0.25) : Alignment.topCenter)
+      : Alignment.center;
 
   return PageRouteBuilder<T>(
     transitionDuration: const Duration(milliseconds: 350),
@@ -1632,7 +1670,7 @@ Route<T> createPlayerExpandRoute<T>(Widget page, {required DeviceMode mode}) {
       );
       final fadeCurve = CurvedAnimation(
         parent: animation,
-        curve: const Interval(0.0, 0.75, curve: Curves.easeOut),
+        curve: const Interval(0.0, 0.65, curve: Curves.easeOut),
         reverseCurve: const Interval(0.15, 1.0, curve: Curves.easeIn),
       );
 
@@ -1640,14 +1678,11 @@ Route<T> createPlayerExpandRoute<T>(Widget page, {required DeviceMode mode}) {
         opacity: fadeCurve,
         child: ScaleTransition(
           alignment: originAlignment,
-          scale: Tween<double>(begin: 0.30, end: 1.0).animate(scaleCurve),
-          child: ClipRRect(
-            borderRadius: Tween<BorderRadius>(
-              begin: BorderRadius.circular(18),
-              end: BorderRadius.zero,
-            ).evaluate(scaleCurve),
-            child: child,
-          ),
+          scale: Tween<double>(
+            begin: fromPreviewDock ? 0.32 : 0.92,
+            end: 1.0,
+          ).animate(scaleCurve),
+          child: child,
         ),
       );
     },
