@@ -68,7 +68,11 @@ class TVDashboardView extends StatefulWidget {
 
 class _TVDashboardViewState extends State<TVDashboardView> {
   final FocusNode _sideMenuFocus = FocusNode();
+  final FocusNode _liveAllCategoryFocusNode = FocusNode();
+  final FocusNode _vodSearchFocusNode = FocusNode();
   final FocusNode _firstPosterFocusNode = FocusNode();
+
+  final ScrollController _liveCategoryScrollController = ScrollController();
   final ScrollController _vodScrollController = ScrollController();
   final ScrollController _liveChannelsScrollController = ScrollController();
 
@@ -86,26 +90,93 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   void initState() {
     super.initState();
     _syncInitialHeroItem();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (widget.isSideMenuOpen) {
+        _requestSideMenuFocus();
+      } else {
+        _focusDefaultElementForCurrentSection();
+      }
+    });
   }
 
   @override
   void didUpdateWidget(covariant TVDashboardView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.selectedCategory != widget.selectedCategory ||
-        oldWidget.activeSection != widget.activeSection ||
-        oldWidget.searchQuery != widget.searchQuery) {
+
+    // 1. Se o menu lateral acabou de ser aberto (ex: ao apertar o botão Voltar na TV),
+    // direciona o foco imediatamente para a opção ativa no menu lateral!
+    if (!oldWidget.isSideMenuOpen && widget.isSideMenuOpen) {
+      _requestSideMenuFocus();
+      return;
+    }
+
+    // 2. Se a seção mudou ou o menu lateral acabou de fechar, aplica a regra de foco da aba
+    if (oldWidget.activeSection != widget.activeSection ||
+        (oldWidget.isSideMenuOpen && !widget.isSideMenuOpen)) {
       _syncInitialHeroItem();
       _resetScrollPositions();
+      if (!widget.isSideMenuOpen) {
+        _focusDefaultElementForCurrentSection();
+      }
+      return;
+    }
+
+    // 3. Se apenas a categoria ou a busca mudou, reseta a rolagem dos itens para o início
+    if (oldWidget.selectedCategory != widget.selectedCategory ||
+        oldWidget.searchQuery != widget.searchQuery) {
+      _syncInitialHeroItem();
+      _resetContentScrollOnly();
     }
   }
 
   @override
   void dispose() {
     _sideMenuFocus.dispose();
+    _liveAllCategoryFocusNode.dispose();
+    _vodSearchFocusNode.dispose();
     _firstPosterFocusNode.dispose();
+    _liveCategoryScrollController.dispose();
     _vodScrollController.dispose();
     _liveChannelsScrollController.dispose();
     super.dispose();
+  }
+
+  /// Posiciona o foco exatamente no item ativo do menu lateral
+  void _requestSideMenuFocus() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _sideMenuFocus.canRequestFocus) {
+        _sideMenuFocus.requestFocus();
+      }
+    });
+    Future.delayed(const Duration(milliseconds: 70), () {
+      if (mounted && widget.isSideMenuOpen && _sideMenuFocus.canRequestFocus) {
+        _sideMenuFocus.requestFocus();
+      }
+    });
+  }
+
+  /// Regra de foco ao entrar numa aba:
+  /// - TV ao Vivo -> Foca na categoria "Todas"
+  /// - Filmes / Séries -> Foca no botão "Pesquisar" no canto superior esquerdo
+  void _focusDefaultElementForCurrentSection() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (widget.activeSection == MainSection.live) {
+        if (_liveCategoryScrollController.hasClients) {
+          _liveCategoryScrollController.jumpTo(0.0);
+        }
+        if (_liveAllCategoryFocusNode.canRequestFocus) {
+          _liveAllCategoryFocusNode.requestFocus();
+        }
+      } else {
+        if (_vodSearchFocusNode.canRequestFocus) {
+          _vodSearchFocusNode.requestFocus();
+        } else if (_firstPosterFocusNode.canRequestFocus) {
+          _firstPosterFocusNode.requestFocus();
+        }
+      }
+    });
   }
 
   void _syncInitialHeroItem() {
@@ -118,6 +189,9 @@ class _TVDashboardViewState extends State<TVDashboardView> {
 
   void _resetScrollPositions() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_liveCategoryScrollController.hasClients) {
+        _liveCategoryScrollController.jumpTo(0.0);
+      }
       if (_vodScrollController.hasClients) {
         _vodScrollController.jumpTo(0.0);
       }
@@ -127,8 +201,19 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     });
   }
 
-  /// Sempre que o usuário aperta para baixo na barra de categorias de Filmes/Séries,
-  /// rebobina o carrossel para o início e foca exatamente no 1º card da categoria!
+  void _resetContentScrollOnly() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_vodScrollController.hasClients) {
+        _vodScrollController.jumpTo(0.0);
+      }
+      if (_liveChannelsScrollController.hasClients) {
+        _liveChannelsScrollController.jumpTo(0.0);
+      }
+    });
+  }
+
+  /// Sempre que o usuário aperta para baixo na barra superior de Filmes/Séries,
+  /// rebobina o carrossel para o início e foca no 1º card da categoria selecionada
   void _focusFirstPosterFromCategory() {
     if (_vodScrollController.hasClients) {
       _vodScrollController.animateTo(
@@ -146,12 +231,10 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   }
 
   void _focusSideMenuNow() {
-    if (!widget.isSideMenuOpen) widget.onOpenSideMenu();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _sideMenuFocus.canRequestFocus) {
-        _sideMenuFocus.requestFocus();
-      }
-    });
+    if (!widget.isSideMenuOpen) {
+      widget.onOpenSideMenu();
+    }
+    _requestSideMenuFocus();
   }
 
   void _updateFocusedVod(StreamItem item) {
@@ -179,17 +262,15 @@ class _TVDashboardViewState extends State<TVDashboardView> {
         lower.contains('erot');
   }
 
-  Future<void> _handleCategorySelect(String cat, {bool focusFirstVodAfter = false}) async {
+  Future<void> _handleCategorySelect(String cat, {bool resetVodCarousel = false}) async {
     if (_isCategoryAdult(cat) && !_adultUnlocked) {
       final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
       if (!unlocked || !mounted) return;
       setState(() => _adultUnlocked = true);
     }
     widget.onSelectCategory(cat);
-    if (focusFirstVodAfter) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _focusFirstPosterFromCategory();
-      });
+    if (resetVodCarousel && _vodScrollController.hasClients) {
+      _vodScrollController.jumpTo(0.0);
     }
   }
 
@@ -253,7 +334,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
       backgroundColor: _bgColor,
       body: Row(
         children: [
-          // 1. MENU LATERAL COM EXPANSÃO E RECOLHIMENTO SUAVES (CURVA EASE-OUT-CUBIC)
+          // 1. MENU LATERAL COM EXPANSÃO E RECOLHIMENTO SUAVES
           AnimatedContainer(
             duration: const Duration(milliseconds: 260),
             curve: Curves.easeOutCubic,
@@ -321,12 +402,12 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   }
 
   // ===========================================================================
-  // MODO 1: TV AO VIVO (1 COLUNA LARGA DE CANAIS COM NOME COMPLETO VISÍVEL)
+  // MODO 1: TV AO VIVO (FOCO EM "TODAS" + 1 COLUNA LARGA DE CANAIS)
   // ===========================================================================
   Widget _buildLiveTVLayout() {
     return Row(
       children: [
-        // COLUNA 1: CATEGORIAS
+        // COLUNA 1: CATEGORIAS (SEMPRE DIRECIONA O FOCO PARA "TODAS" AO ENTRAR NA ABA)
         Container(
           width: 235,
           color: _bgColor,
@@ -388,16 +469,19 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                 ),
               Expanded(
                 child: ListView.builder(
+                  controller: _liveCategoryScrollController,
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   itemCount: widget.sectionCategories.length,
                   itemBuilder: (context, idx) {
                     final cat = widget.sectionCategories[idx];
                     final count = widget.categoryCounts[cat] ?? 0;
                     final isSel = cat == widget.selectedCategory;
+                    final isAllCategory = idx == 0;
                     final isAdultCat = _isCategoryAdult(cat);
 
                     return TVFocusableItem(
-                      autofocus: !widget.isSideMenuOpen && isSel,
+                      focusNode: isAllCategory ? _liveAllCategoryFocusNode : null,
+                      autofocus: !widget.isSideMenuOpen && isAllCategory,
                       onMoveLeft: _focusSideMenuNow,
                       onSelect: () => _handleCategorySelect(cat),
                       builder: (c, f) => AnimatedContainer(
@@ -514,7 +598,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                               ),
                               child: Row(
                                 children: [
-                                  // Número do canal
                                   Container(
                                     width: 34,
                                     alignment: Alignment.center,
@@ -530,7 +613,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                                   const SizedBox(width: 6),
                                   buildChannelLogo(item.logo, size: 48, isLocked: isLocked),
                                   const SizedBox(width: 14),
-                                  // Espaço amplo para exibir o nome completo do canal
                                   Expanded(
                                     child: Column(
                                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -554,7 +636,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                                             Expanded(
                                               child: Text(
                                                 isPlaying
-                                                    ? '▶ No Ar na Pré-visualização • Pressione OK para Tela Cheia'
+                                                    ? '▶ Em Pré-visualização • Pressione OK para Tela Cheia'
                                                     : item.group,
                                                 maxLines: 1,
                                                 overflow: TextOverflow.ellipsis,
@@ -814,7 +896,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
   }
 
   // ===========================================================================
-  // MODO 2: FILMES E SÉRIES IMERSIVO (COM RETORNO AUTOMÁTICO AO 1º ITEM)
+  // MODO 2: FILMES E SÉRIES (FOCO NO BOTÃO PESQUISAR + RETORNO AO 1º ITEM)
   // ===========================================================================
   Widget _buildImmersiveVodLayout() {
     final isSeries = widget.activeSection == MainSection.series;
@@ -842,7 +924,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // 1. BACKDROP COM TRANSIÇÃO SUAVE DE IMAGEM
         if (bgUrl != null && bgUrl.isNotEmpty && !isFocusedAdultLocked)
           Positioned(
             top: 0,
@@ -879,11 +960,10 @@ class _TVDashboardViewState extends State<TVDashboardView> {
           ),
         ),
 
-        // 2. BARRA DE CATEGORIAS + HERO BANNER + CARROSSEL
         Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Barra Superior de Pesquisa e Categorias (Aperte Para Baixo = Vai sempre p/ o 1º Filme/Série!)
+            // BARRA SUPERIOR: BOTÃO PESQUISAR NO CANTO SUPERIOR ESQUERDO (FOCO INICIAL) + CATEGORIAS
             Padding(
               padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
               child: SizedBox(
@@ -892,16 +972,22 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                   children: [
                     if (widget.searchController != null) ...[
                       TVFocusableItem(
+                        focusNode: _vodSearchFocusNode,
+                        autofocus: !widget.isSideMenuOpen,
                         autoScroll: false,
                         onMoveLeft: _focusSideMenuNow,
                         onMoveDown: _focusFirstPosterFromCategory,
                         onSelect: _openSearchKeyboard,
-                        builder: (c, f) => Container(
+                        builder: (c, f) => AnimatedContainer(
+                          duration: const Duration(milliseconds: 150),
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
                           decoration: BoxDecoration(
                             color: f ? _accentColor : _panelColor,
                             borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: f ? Colors.white : Colors.white24),
+                            border: Border.all(
+                              color: f ? Colors.white : Colors.white24,
+                              width: f ? 2 : 1,
+                            ),
                           ),
                           child: Row(
                             children: [
@@ -945,7 +1031,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                                   ? _focusSideMenuNow
                                   : null,
                               onMoveDown: _focusFirstPosterFromCategory,
-                              onSelect: () => _handleCategorySelect(cat, focusFirstVodAfter: false),
+                              onSelect: () => _handleCategorySelect(cat, resetVodCarousel: true),
                               builder: (c, f) => AnimatedContainer(
                                 duration: const Duration(milliseconds: 150),
                                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
@@ -980,7 +1066,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
               ),
             ),
 
-            // HERO BANNER CENTRAL COM ANIMAÇÃO SUAVE DE TEXTO
+            // HERO BANNER CENTRAL
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(36, 16, 36, 0),
@@ -1068,7 +1154,7 @@ class _TVDashboardViewState extends State<TVDashboardView> {
               ),
             ),
 
-            // CARROSSEL DE PÔSTERES (SEMPRE COMEÇA NO ITEM 0 DA CATEGORIA SELECIONADA)
+            // CARROSSEL DE PÔSTERES
             SizedBox(
               height: 265,
               child: isSeries
@@ -1086,7 +1172,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                             final locked = s.isAdult && !_adultUnlocked;
                             return TVFocusableItem(
                               focusNode: idx == 0 ? _firstPosterFocusNode : null,
-                              autofocus: idx == 0 && !widget.isSideMenuOpen,
                               onMoveLeft: idx == 0 ? _focusSideMenuNow : null,
                               onSelect: () => _handleSeriesSelect(s),
                               builder: (c, f) {
@@ -1127,7 +1212,6 @@ class _TVDashboardViewState extends State<TVDashboardView> {
                             final locked = item.isAdult && !_adultUnlocked;
                             return TVFocusableItem(
                               focusNode: idx == 0 ? _firstPosterFocusNode : null,
-                              autofocus: idx == 0 && !widget.isSideMenuOpen,
                               onMoveLeft: idx == 0 ? _focusSideMenuNow : null,
                               onSelect: () => _handleVodSelect(item),
                               builder: (c, f) {
@@ -1337,16 +1421,23 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     final sel = widget.activeSection == section;
     return TVFocusableItem(
       focusNode: sel ? _sideMenuFocus : null,
-      autofocus: sel,
-      onMoveRight: widget.onCloseSideMenu,
+      autofocus: sel && widget.isSideMenuOpen,
+      onMoveRight: () {
+        widget.onCloseSideMenu();
+        _focusDefaultElementForCurrentSection();
+      },
       onSelect: () => widget.onSelectSection(section),
       builder: (c, f) => AnimatedContainer(
         duration: const Duration(milliseconds: 150),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         margin: const EdgeInsets.symmetric(vertical: 3),
         decoration: BoxDecoration(
-          color: sel ? _accentColor : (f ? Colors.white.withOpacity(0.08) : Colors.transparent),
+          color: sel ? _accentColor : (f ? Colors.white.withOpacity(0.1) : Colors.transparent),
           borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: f ? Colors.white : Colors.transparent,
+            width: f ? 1.5 : 1,
+          ),
         ),
         child: Row(
           children: [
