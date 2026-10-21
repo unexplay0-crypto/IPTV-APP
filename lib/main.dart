@@ -375,6 +375,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
     final Map<String, String> logos = {};
     final Map<String, String> groups = {};
     final Map<String, String> qualities = {};
+    final Map<String, bool> adults = {};
 
     final regEp = RegExp(
       r'^(.*?)\s*(?:S(\d{1,2})\s*E(\d{1,3})|(\d{1,2})x(\d{1,3})|Temporada\s*(\d{1,2}).*?Ep(?:is[oó]dio)?\s*(\d{1,3}))',
@@ -403,6 +404,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
       }
       groups.putIfAbsent(seriesTitle, () => ep.group);
       qualities.putIfAbsent(seriesTitle, () => ep.qualityTag);
+      adults[seriesTitle] = (adults[seriesTitle] ?? false) || ep.isAdult;
     }
 
     return grouped.entries.map<SeriesGroup>((entry) {
@@ -413,6 +415,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
         logo: logos[sTitle] ?? '',
         group: groups[sTitle] ?? 'Séries',
         qualityTag: qualities[sTitle] ?? 'HD',
+        isAdult: adults[sTitle] ?? false,
         seasons: entry.value,
       );
     }).toList();
