@@ -3,7 +3,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'core.dart';
 import 'widgets.dart';
@@ -47,7 +46,7 @@ class UnexVisionApp extends StatelessWidget {
 }
 
 // ===========================================================================
-// PARSER M3U EM ISOLATE (SUPORTE A CANAIS, FILMES DUAL ÁUDIO E SÉRIES)
+// PARSER M3U EM ISOLATE (100% COMPATÍVEL COM LIB/CORE.DART)
 // ===========================================================================
 List<StreamItem> _parseM3uInBackground(String rawContent) {
   final lines = rawContent.split(RegExp(r'\r?\n'));
@@ -62,7 +61,6 @@ List<StreamItem> _parseM3uInBackground(String rawContent) {
   final regQuality = RegExp(r'\b(4K|UHD|FHD|1080P|HD|720P|SD|H265|HEVC)\b', caseSensitive: false);
   final regAdult = RegExp(r'\b(XXX|ADULTO|ADULT|\+18|18\+|PORN|SEXO|EROTICO)\b', caseSensitive: false);
   final regSeries = RegExp(r'\bS(\d{1,2})\s*E(\d{1,3})\b|\b(\d{1,2})x(\d{1,3})\b', caseSensitive: false);
-  final regSubtitled = RegExp(r'\b(LEG|LEGENDADO)\b', caseSensitive: false);
 
   int indexCounter = 0;
 
@@ -89,7 +87,6 @@ List<StreamItem> _parseM3uInBackground(String rawContent) {
       final url = line;
       final lowerUrl = url.toLowerCase();
       final lowerGroup = currentGroup.toLowerCase();
-      final lowerName = currentName.toLowerCase();
 
       ContentType type = ContentType.live;
       if (lowerUrl.contains('/series/') ||
@@ -113,9 +110,6 @@ List<StreamItem> _parseM3uInBackground(String rawContent) {
       final qualityTag = qMatch != null ? qMatch.group(1)!.toUpperCase() : 'HD';
 
       final isAdult = regAdult.hasMatch(currentGroup) || regAdult.hasMatch(currentName);
-      final isSub = regSubtitled.hasMatch(currentName) || regSubtitled.hasMatch(currentGroup);
-
-      final audioLabel = isSub ? 'Legendado' : 'Dublado';
       final itemId = '${type.name}_${currentName.hashCode}_${url.hashCode}_$indexCounter';
       indexCounter++;
 
@@ -129,8 +123,6 @@ List<StreamItem> _parseM3uInBackground(String rawContent) {
           type: type,
           qualityTag: qualityTag,
           isAdult: isAdult,
-          isSubtitled: isSub,
-          audioOptions: {audioLabel: url},
         ),
       );
 
@@ -140,48 +132,7 @@ List<StreamItem> _parseM3uInBackground(String rawContent) {
     }
   }
 
-  // Mescla filmes duplicados (Dublado + Legendado) em um único card com seletor de áudio
-  final List<StreamItem> finalItems = [];
-  final Map<String, int> movieKeyToIndex = {};
-  final regCleanMovieTitle = RegExp(
-    r'\s*(\[?(?:LEG|LEGENDADO|DUB|DUBLADO|DUAL|4K|FHD|HD|SD|1080P|720P)\]?)\s*',
-    caseSensitive: false,
-  );
-
-  for (final item in rawItems) {
-    if (item.type != ContentType.movie) {
-      finalItems.add(item);
-      continue;
-    }
-
-    final baseTitle = item.name.replaceAll(regCleanMovieTitle, ' ').trim();
-    final key = '${baseTitle.toLowerCase()}|${item.group.toLowerCase()}';
-
-    if (movieKeyToIndex.containsKey(key)) {
-      final existingIdx = movieKeyToIndex[key]!;
-      final existing = finalItems[existingIdx];
-      final mergedAudio = Map<String, String>.from(existing.audioOptions);
-      mergedAudio.addAll(item.audioOptions);
-
-      finalItems[existingIdx] = StreamItem(
-        id: existing.id,
-        name: baseTitle.isNotEmpty ? baseTitle : existing.name,
-        url: mergedAudio['Dublado'] ?? existing.url,
-        logo: existing.logo.isNotEmpty ? existing.logo : item.logo,
-        group: existing.group,
-        type: ContentType.movie,
-        qualityTag: existing.qualityTag,
-        isAdult: existing.isAdult || item.isAdult,
-        isSubtitled: !mergedAudio.containsKey('Dublado'),
-        audioOptions: mergedAudio,
-      );
-    } else {
-      movieKeyToIndex[key] = finalItems.length;
-      finalItems.add(item);
-    }
-  }
-
-  return finalItems;
+  return rawItems;
 }
 
 // ===========================================================================
@@ -211,18 +162,16 @@ class _UnexRootControllerState extends State<UnexRootController> {
   bool _isLoadingPlaylist = false;
   String? _loginError;
 
-  // Controladores do Login Tradicional (100% preservados)
   bool _useDirectM3uLink = false;
   final TextEditingController _dnsController = TextEditingController();
   final TextEditingController _userController = TextEditingController();
   final TextEditingController _passController = TextEditingController();
   final TextEditingController _m3uController = TextEditingController();
 
-  // Estado do Catálogo e Navegação
   List<StreamItem> _allItems = [];
   List<SeriesGroup> _allSeriesGroups = [];
 
-  int _activeSection = 0; // 0: TV ao Vivo, 1: Filmes, 2: Séries, 3: Favoritos, 4: Histórico
+  int _activeSection = 0;
   String _selectedCategory = 'Todas';
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
@@ -250,9 +199,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
   }
 
   Future<void> _initializeBoot() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    final savedMode = prefs.getString(_kPrefDeviceMode);
+    final savedMode = await LocalAppStorage.getString(_kPrefDeviceMode);
     if (savedMode == 'mobile') {
       _deviceMode = DeviceMode.mobile;
     } else {
@@ -260,10 +207,10 @@ class _UnexRootControllerState extends State<UnexRootController> {
     }
     applyDeviceOrientation(_deviceMode);
 
-    _favorites = (prefs.getStringList(_kPrefFavorites) ?? []).toSet();
-    _historyIds = prefs.getStringList(_kPrefHistory) ?? [];
+    _favorites = (await LocalAppStorage.getStringList(_kPrefFavorites)).toSet();
+    _historyIds = await LocalAppStorage.getStringList(_kPrefHistory);
 
-    final savedProgressList = prefs.getStringList(_kPrefProgress) ?? [];
+    final savedProgressList = await LocalAppStorage.getStringList(_kPrefProgress);
     final Map<String, double> progMap = {};
     for (final entry in savedProgressList) {
       final parts = entry.split('|');
@@ -274,16 +221,15 @@ class _UnexRootControllerState extends State<UnexRootController> {
     }
     _watchProgress = progMap;
 
-    final savedDns = prefs.getString(_kPrefDns) ?? '';
-    final savedUser = prefs.getString(_kPrefUser) ?? '';
-    final savedPass = prefs.getString(_kPrefPass) ?? '';
-    final savedM3u = prefs.getString(_kPrefM3uUrl) ?? '';
-    final activatedByCode = prefs.getBool(_kPrefActivatedByCode) ?? false;
+    final savedDns = (await LocalAppStorage.getString(_kPrefDns)) ?? '';
+    final savedUser = (await LocalAppStorage.getString(_kPrefUser)) ?? '';
+    final savedPass = (await LocalAppStorage.getString(_kPrefPass)) ?? '';
+    final savedM3u = (await LocalAppStorage.getString(_kPrefM3uUrl)) ?? '';
+    final activatedByCode = (await LocalAppStorage.getBool(_kPrefActivatedByCode)) ?? false;
 
     _dnsController.text = savedDns;
     _userController.text = savedUser;
     _passController.text = savedPass;
-    // Segurança: Se foi ativado por código, não expõe a URL M3U no campo de texto
     if (!activatedByCode) {
       _m3uController.text = savedM3u;
     }
@@ -302,14 +248,12 @@ class _UnexRootControllerState extends State<UnexRootController> {
   void _setDeviceMode(DeviceMode mode) async {
     setState(() => _deviceMode = mode);
     applyDeviceOrientation(mode);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_kPrefDeviceMode, mode == DeviceMode.mobile ? 'mobile' : 'tv');
+    await LocalAppStorage.setString(
+      _kPrefDeviceMode,
+      mode == DeviceMode.mobile ? 'mobile' : 'tv',
+    );
   }
 
-  // ===========================================================================
-  // FUNÇÃO ORIGINAL DE CARREGAMENTO E SALVAMENTO DA LISTA M3U
-  // (Reutilizada tanto pelo Login Tradicional quanto pelo Código de Ativação)
-  // ===========================================================================
   Future<void> _loadPlaylistFromUrl(
     String rawUrl, {
     bool fromActivationCode = false,
@@ -354,13 +298,12 @@ class _UnexRootControllerState extends State<UnexRootController> {
 
         final seriesGroups = _buildSeriesGroups(parsedItems);
 
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString(_kPrefM3uUrl, cleanUrl);
-        await prefs.setBool(_kPrefActivatedByCode, fromActivationCode);
+        await LocalAppStorage.setString(_kPrefM3uUrl, cleanUrl);
+        await LocalAppStorage.setBool(_kPrefActivatedByCode, fromActivationCode);
         if (!fromActivationCode && !_useDirectM3uLink) {
-          await prefs.setString(_kPrefDns, _dnsController.text.trim());
-          await prefs.setString(_kPrefUser, _userController.text.trim());
-          await prefs.setString(_kPrefPass, _passController.text.trim());
+          await LocalAppStorage.setString(_kPrefDns, _dnsController.text.trim());
+          await LocalAppStorage.setString(_kPrefUser, _userController.text.trim());
+          await LocalAppStorage.setString(_kPrefPass, _passController.text.trim());
         }
 
         final firstLive = parsedItems.cast<StreamItem?>().firstWhere(
@@ -460,26 +403,22 @@ class _UnexRootControllerState extends State<UnexRootController> {
       groups.putIfAbsent(seriesTitle, () => ep.group);
     }
 
-    return grouped.entries.map((entry) {
+    return grouped.entries.map<SeriesGroup>((entry) {
+      final sTitle = entry.key;
       return SeriesGroup(
-        id: entry.key,
-        title: entry.key,
-        logo: logos[entry.key] ?? '',
-        group: groups[entry.key] ?? 'Séries',
+        id: 'series_${sTitle.hashCode}',
+        title: sTitle,
+        logo: logos[sTitle] ?? '',
+        group: groups[sTitle] ?? 'Séries',
         seasons: entry.value,
       );
     }).toList();
   }
 
-  // ===========================================================================
-  // CATEGORIAS E FILTRAGEM (INCLUI AS 3 SUBCATEGORIAS UNIFICADAS DE FAVORITOS)
-  // ===========================================================================
   List<String> get _currentCategories {
-    // SEÇÃO 3 (FAVORITOS): Dividida exatamente nas 3 subcategorias solicitadas
     if (_activeSection == 3) {
       return const ['Canais', 'Filmes', 'Séries'];
     }
-    // SEÇÃO 4 (HISTÓRICO): Lista direta sem subcategorias
     if (_activeSection == 4) {
       return const [];
     }
@@ -504,7 +443,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
   List<StreamItem> get _filteredItems {
     final query = _searchQuery.trim().toLowerCase();
 
-    // SEÇÃO 3: FAVORITOS (Lista única por subcategoria, sem dividir por grupos/gêneros)
     if (_activeSection == 3) {
       if (_selectedCategory == 'Canais' || _selectedCategory == 'TV ao Vivo') {
         return _allItems.where((i) {
@@ -519,12 +457,10 @@ class _UnexRootControllerState extends State<UnexRootController> {
           return true;
         }).toList();
       } else {
-        // Quando em 'Séries', usa _filteredSeriesGroups
         return const [];
       }
     }
 
-    // SEÇÃO 4: HISTÓRICO
     if (_activeSection == 4) {
       final Map<String, StreamItem> byId = {for (final i in _allItems) i.id: i};
       final List<StreamItem> hist = [];
@@ -539,7 +475,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
       return hist;
     }
 
-    // SEÇÕES 0 (TV AO VIVO) e 1 (FILMES)
     final targetType = _activeSection == 0 ? ContentType.live : ContentType.movie;
     return _allItems.where((i) {
       if (i.type != targetType) return false;
@@ -552,7 +487,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
   List<SeriesGroup> get _filteredSeriesGroups {
     final query = _searchQuery.trim().toLowerCase();
 
-    // SEÇÃO 3: FAVORITOS -> SUBCATEGORIA SÉRIES (Lista única com todas as séries favoritas)
     if (_activeSection == 3) {
       if (_selectedCategory != 'Séries') return const [];
       return _allSeriesGroups.where((s) {
@@ -629,8 +563,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
         _favorites.add(id);
       }
     });
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_kPrefFavorites, _favorites.toList());
+    await LocalAppStorage.setStringList(_kPrefFavorites, _favorites.toList());
   }
 
   void _recordHistory(StreamItem item) async {
@@ -641,13 +574,9 @@ class _UnexRootControllerState extends State<UnexRootController> {
         _historyIds = _historyIds.sublist(0, 60);
       }
     });
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_kPrefHistory, _historyIds);
+    await LocalAppStorage.setStringList(_kPrefHistory, _historyIds);
   }
 
-  // ===========================================================================
-  // TRANSIÇÃO FLUIDA E SEM ENGASGO ENTRE A PRÉ-VISUALIZAÇÃO E A TELA CHEIA
-  // ===========================================================================
   Future<void> _openFullScreen(
     StreamItem item,
     List<StreamItem> playlist, {
@@ -661,8 +590,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
 
     _recordHistory(item);
 
-    // Libera a superfície da pré-visualização imediatamente antes de iniciar a transição
-    // para evitar que duas VideoPlayer surfaces disputem o decoder de hardware da TV Box.
     SharedStreamEngine.instance.setFullScreenActive(true);
 
     await Navigator.of(context).push(
@@ -693,25 +620,18 @@ class _UnexRootControllerState extends State<UnexRootController> {
     if (!mounted) return;
     SharedStreamEngine.instance.setFullScreenActive(false);
 
-    // Se voltou para TV ao Vivo (ou Favoritos -> Canais), mantém o canal atual sincronizado
     final activeEngineItem = SharedStreamEngine.instance.currentItem;
     if (activeEngineItem != null && activeEngineItem.type == ContentType.live) {
       setState(() => _selectedLiveChannel = activeEngineItem);
     }
   }
 
-  // ===========================================================================
-  // DETALHES DE FILME E SÉRIE
-  // ===========================================================================
   void _openMovieDetails(StreamItem movie) {
-    String selectedAudioKey = movie.audioOptions.keys.first;
-
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setModalState) {
           final isFav = _favorites.contains(movie.id);
-          final selectedUrl = movie.audioOptions[selectedAudioKey] ?? movie.url;
 
           return Dialog(
             backgroundColor: const Color(0xFF111520),
@@ -756,12 +676,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
                             children: [
                               buildQualityBadge(movie.qualityTag),
                               const SizedBox(width: 8),
-                              buildAudioOptionBadge(
-                                movie.audioOptions.length > 1
-                                    ? 'DUAL ÁUDIO'
-                                    : (movie.isSubtitled ? 'LEGENDADO' : 'DUBLADO'),
-                                isDual: movie.audioOptions.length > 1,
-                              ),
+                              buildAudioOptionBadge('FILME VOD', isDual: false),
                             ],
                           ),
                           const SizedBox(height: 10),
@@ -780,52 +695,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                             movie.group,
                             style: const TextStyle(fontSize: 12.5, color: Colors.white54),
                           ),
-                          if (movie.audioOptions.length > 1) ...[
-                            const SizedBox(height: 16),
-                            const Text(
-                              'Escolha o Áudio:',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white70,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              children: movie.audioOptions.keys.map((audioKey) {
-                                final isSelectedAudio = audioKey == selectedAudioKey;
-                                return TVFocusableItem(
-                                  autoScroll: false,
-                                  onSelect: () => setModalState(() => selectedAudioKey = audioKey),
-                                  builder: (c, f) => Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                                    decoration: BoxDecoration(
-                                      color: f
-                                          ? const Color(0xFF00E5FF)
-                                          : isSelectedAudio
-                                              ? const Color(0xFF00E5FF).withOpacity(0.2)
-                                              : Colors.white10,
-                                      borderRadius: BorderRadius.circular(8),
-                                      border: Border.all(
-                                        color: f || isSelectedAudio
-                                            ? const Color(0xFF00E5FF)
-                                            : Colors.white24,
-                                      ),
-                                    ),
-                                    child: Text(
-                                      audioKey,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: f ? Colors.black : Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              }).toList(),
-                            ),
-                          ],
                           const SizedBox(height: 22),
                           Row(
                             children: [
@@ -835,19 +704,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
                                   autoScroll: false,
                                   onSelect: () {
                                     Navigator.pop(ctx);
-                                    final playItem = StreamItem(
-                                      id: movie.id,
-                                      name: movie.name,
-                                      url: selectedUrl,
-                                      logo: movie.logo,
-                                      group: movie.group,
-                                      type: ContentType.movie,
-                                      qualityTag: movie.qualityTag,
-                                      isAdult: movie.isAdult,
-                                      isSubtitled: selectedAudioKey == 'Legendado',
-                                      audioOptions: movie.audioOptions,
-                                    );
-                                    _openFullScreen(playItem, [playItem]);
+                                    _openFullScreen(movie, [movie]);
                                   },
                                   builder: (c, f) => Container(
                                     padding: const EdgeInsets.symmetric(vertical: 12),
@@ -1018,7 +875,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                     ),
                     const SizedBox(height: 14),
 
-                    // Seletor de Temporadas
                     SizedBox(
                       height: 38,
                       child: ListView.builder(
@@ -1061,7 +917,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Lista de Episódios
                     Expanded(
                       child: ListView.builder(
                         itemCount: episodes.length,
@@ -1135,9 +990,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
     });
   }
 
-  // ===========================================================================
-  // CONSTRUÇÃO DE TELAS (BOOT -> LOGIN TRADICIONAL + CÓDIGO -> APP PRINCIPAL)
-  // ===========================================================================
   @override
   Widget build(BuildContext context) {
     if (_isCheckingBoot) {
@@ -1183,9 +1035,8 @@ class _UnexRootControllerState extends State<UnexRootController> {
           return ok;
         },
         onRefreshPlaylist: () async {
-          final prefs = await SharedPreferences.getInstance();
-          final savedUrl = prefs.getString(_kPrefM3uUrl) ?? '';
-          final byCode = prefs.getBool(_kPrefActivatedByCode) ?? false;
+          final savedUrl = (await LocalAppStorage.getString(_kPrefM3uUrl)) ?? '';
+          final byCode = (await LocalAppStorage.getBool(_kPrefActivatedByCode)) ?? false;
           if (savedUrl.isNotEmpty) {
             await _loadPlaylistFromUrl(savedUrl, fromActivationCode: byCode);
           }
@@ -1223,9 +1074,8 @@ class _UnexRootControllerState extends State<UnexRootController> {
         return ok;
       },
       onRefreshPlaylist: () async {
-        final prefs = await SharedPreferences.getInstance();
-        final savedUrl = prefs.getString(_kPrefM3uUrl) ?? '';
-        final byCode = prefs.getBool(_kPrefActivatedByCode) ?? false;
+        final savedUrl = (await LocalAppStorage.getString(_kPrefM3uUrl)) ?? '';
+        final byCode = (await LocalAppStorage.getBool(_kPrefActivatedByCode)) ?? false;
         if (savedUrl.isNotEmpty) {
           await _loadPlaylistFromUrl(savedUrl, fromActivationCode: byCode);
         }
@@ -1234,9 +1084,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
     );
   }
 
-  // ===========================================================================
-  // TELA DE LOGIN ORIGINAL INALTERADA + BOTÃO "USAR CÓDIGO DE ATIVAÇÃO"
-  // ===========================================================================
   Widget _buildLoginScreen() {
     return Scaffold(
       backgroundColor: const Color(0xFF090B10),
@@ -1262,7 +1109,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Cabeçalho UNEX PLAY
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     decoration: BoxDecoration(
@@ -1283,7 +1129,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Seletor de Modo (TV Box / Celular)
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -1302,7 +1147,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Alternador Login Xtream (DNS + Usuário + Senha) vs URL M3U
                   Row(
                     children: [
                       Expanded(
@@ -1342,7 +1186,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                   ),
                   const SizedBox(height: 18),
 
-                  // Campos Originais do Login Tradicional (100% Preservados)
                   if (!_useDirectM3uLink) ...[
                     TextField(
                       controller: _dnsController,
@@ -1397,7 +1240,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
 
                   const SizedBox(height: 20),
 
-                  // Botão Entrar Tradicional
                   SizedBox(
                     width: double.infinity,
                     height: 50,
@@ -1427,9 +1269,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                     ),
                   ),
 
-                  // ===========================================================
-                  // INTEGRAÇÃO SOLICITADA: DIVISOR "ou" + BOTÃO DE ATIVAÇÃO
-                  // ===========================================================
                   const SizedBox(height: 20),
                   const Row(
                     children: [
