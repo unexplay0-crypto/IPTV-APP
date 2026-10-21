@@ -1,9 +1,85 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'core.dart';
+
+// ===========================================================================
+// ARMAZENAMENTO LOCAL NATIVO (SEM DEPENDER DE SHARED_PREFERENCES)
+// ===========================================================================
+class LocalAppStorage {
+  static Map<String, dynamic>? _cache;
+
+  static Future<File> _getStorageFile() async {
+    final dir = Directory.systemTemp;
+    return File('${dir.path}/unex_play_local_store_v1.json');
+  }
+
+  static Future<Map<String, dynamic>> _loadMap() async {
+    if (_cache != null) return _cache!;
+    try {
+      final file = await _getStorageFile();
+      if (await file.exists()) {
+        final content = await file.readAsString();
+        final decoded = jsonDecode(content);
+        if (decoded is Map<String, dynamic>) {
+          _cache = decoded;
+          return _cache!;
+        }
+      }
+    } catch (_) {}
+    _cache = <String, dynamic>{};
+    return _cache!;
+  }
+
+  static Future<void> _saveMap() async {
+    try {
+      final file = await _getStorageFile();
+      await file.writeAsString(jsonEncode(_cache ?? {}), flush: true);
+    } catch (_) {}
+  }
+
+  static Future<String?> getString(String key) async {
+    final map = await _loadMap();
+    final val = map[key];
+    return val is String ? val : null;
+  }
+
+  static Future<void> setString(String key, String value) async {
+    final map = await _loadMap();
+    map[key] = value;
+    await _saveMap();
+  }
+
+  static Future<bool?> getBool(String key) async {
+    final map = await _loadMap();
+    final val = map[key];
+    return val is bool ? val : null;
+  }
+
+  static Future<void> setBool(String key, bool value) async {
+    final map = await _loadMap();
+    map[key] = value;
+    await _saveMap();
+  }
+
+  static Future<List<String>> getStringList(String key) async {
+    final map = await _loadMap();
+    final val = map[key];
+    if (val is List) {
+      return val.map((e) => e.toString()).toList();
+    }
+    return <String>[];
+  }
+
+  static Future<void> setStringList(String key, List<String> value) async {
+    final map = await _loadMap();
+    map[key] = value;
+    await _saveMap();
+  }
+}
 
 // ===========================================================================
 // COMPONENTE DE FOCO PARA CONTROLE REMOTO DE TV E TOQUE
@@ -125,9 +201,7 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     final key = event.logicalKey;
 
-    // 1. Tratamento do botão OK / Confirmar (Clique curto vs Segurar botão OK)
     if (_isConfirmKey(key)) {
-      // Se não houver ação de segurar (onLongSelect), responde imediatamente no KeyDown
       if (widget.onLongSelect == null) {
         if (event is KeyDownEvent) {
           widget.onSelect?.call();
@@ -136,7 +210,6 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
         return KeyEventResult.ignored;
       }
 
-      // Se houver onLongSelect configurado (Canais, Filmes e Séries):
       if (event is KeyDownEvent) {
         if (!_isSelectKeyDown) {
           _isSelectKeyDown = true;
@@ -166,7 +239,6 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
       }
     }
 
-    // 2. Tratamento das setas direcionais do controle remoto
     if (event is KeyDownEvent) {
       if (key == LogicalKeyboardKey.arrowLeft && widget.onMoveLeft != null) {
         widget.onMoveLeft!();
@@ -348,24 +420,25 @@ Widget buildChannelLogo(String url, {double size = 44, bool isLocked = false}) {
 }
 
 // ===========================================================================
-// CARD DE PÔSTER DE STREAMING (FILMES E SÉRIES)
+// CARD DE PÔSTER DE STREAMING (COMPATÍVEL COM TV E MOBILE)
 // ===========================================================================
 Widget buildStreamingPosterCard({
   required String title,
   required String subtitle,
   required String logoUrl,
-  required String badgeText,
+  String badgeText = 'HD',
   bool isFocused = false,
   bool isPlaying = false,
-  VoidCallback? onFavoriteTap,
   bool isFavorite = false,
   bool isAdultLocked = false,
   bool hasDualAudio = false,
   bool isSubtitledOnly = false,
   double? progress,
-  required VoidCallback onTap,
+  VoidCallback? onTap,
   VoidCallback? onLongPress,
 }) {
+  final effectiveHighlight = isFocused || isPlaying;
+
   return AnimatedScale(
     scale: isFocused ? 1.06 : 1.0,
     duration: const Duration(milliseconds: 160),
@@ -377,10 +450,10 @@ Widget buildStreamingPosterCard({
         color: const Color(0xFF141926),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isFocused ? const Color(0xFF00E5FF) : Colors.white.withOpacity(0.08),
-          width: isFocused ? 2.6 : 1.0,
+          color: effectiveHighlight ? const Color(0xFF00E5FF) : Colors.white.withOpacity(0.08),
+          width: effectiveHighlight ? 2.6 : 1.0,
         ),
-        boxShadow: isFocused
+        boxShadow: effectiveHighlight
             ? [
                 BoxShadow(
                   color: const Color(0xFF00E5FF).withOpacity(0.28),
@@ -429,7 +502,6 @@ Widget buildStreamingPosterCard({
               child: const Icon(Icons.movie_creation_outlined, color: Colors.white24, size: 42),
             ),
 
-          // Gradiente inferior para leitura do título
           Positioned.fill(
             child: DecoratedBox(
               decoration: BoxDecoration(
@@ -447,7 +519,6 @@ Widget buildStreamingPosterCard({
             ),
           ),
 
-          // Topo do Card: Qualidade, Áudio e Estrela de Favorito
           Positioned(
             top: 8,
             left: 8,
@@ -508,7 +579,6 @@ Widget buildStreamingPosterCard({
             ),
           ),
 
-          // Rodapé do Card: Título, Subtítulo e Barra de Progresso
           Positioned(
             left: 10,
             right: 10,
@@ -524,7 +594,7 @@ Widget buildStreamingPosterCard({
                   style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
-                    color: isFocused ? const Color(0xFF00E5FF) : Colors.white,
+                    color: effectiveHighlight ? const Color(0xFF00E5FF) : Colors.white,
                     height: 1.15,
                   ),
                 ),
@@ -712,9 +782,7 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
               break;
             }
           }
-        } catch (_) {
-          // Tenta a próxima URL de fallback automaticamente
-        }
+        } catch (_) {}
       }
     } finally {
       stopwatch.stop();
@@ -839,8 +907,6 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
                 ],
               ),
               const SizedBox(height: 24),
-
-              // Medidor Central em Mbps
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
@@ -893,7 +959,6 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
                   ],
                 ),
               ),
-
               if (_hasFinished) ...[
                 const SizedBox(height: 16),
                 Container(
@@ -944,7 +1009,6 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
                   ),
                 ),
               ],
-
               const SizedBox(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
@@ -1005,18 +1069,16 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
 }
 
 // ===========================================================================
-// CONTROLE PARENTAL (SENHA PIN PARA CONTEÚDO ADULTO +18)
+// CONTROLE PARENTAL (USANDO ARMAZENAMENTO LOCAL NATIVO)
 // ===========================================================================
 const String _kParentalPinPrefKey = 'unex_parental_pin_v1';
 
 Future<String> _getSavedPin() async {
-  final prefs = await SharedPreferences.getInstance();
-  return prefs.getString(_kParentalPinPrefKey) ?? '0000';
+  return (await LocalAppStorage.getString(_kParentalPinPrefKey)) ?? '0000';
 }
 
 Future<void> _saveNewPin(String pin) async {
-  final prefs = await SharedPreferences.getInstance();
-  await prefs.setString(_kParentalPinPrefKey, pin);
+  await LocalAppStorage.setString(_kParentalPinPrefKey, pin);
 }
 
 Future<bool> showParentalPinPrompt(
