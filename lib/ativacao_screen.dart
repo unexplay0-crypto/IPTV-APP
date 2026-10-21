@@ -345,7 +345,10 @@ class _AtivacaoScreenState extends State<AtivacaoScreen> {
                               enabled: !_isLoading,
                               textAlign: TextAlign.center,
                               textCapitalization: TextCapitalization.characters,
+                              keyboardType: TextInputType.text,
+                              textInputAction: TextInputAction.next,
                               maxLength: 1,
+                              onTap: () => _fieldFocusNodes[index].requestFocus(),
                               style: const TextStyle(
                                 fontSize: 22,
                                 fontWeight: FontWeight.w900,

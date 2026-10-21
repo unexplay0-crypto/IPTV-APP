@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -236,11 +237,42 @@ class _UnexRootControllerState extends State<UnexRootController> {
     }
 
     if (savedM3u.isNotEmpty) {
-      setState(() => _isCheckingBoot = false);
-      await _loadPlaylistFromUrl(
+      // 1) Tenta carregar do cache offline primeiro (inicio instantaneo)
+      bool cacheHit = false;
+      try {
+        final cached = await LocalAppStorage.loadOfflinePlaylist();
+        if (cached.isNotEmpty) {
+          final cachedGroups = _buildSeriesGroups(cached);
+          final firstLiveCached = cached.cast<StreamItem?>().firstWhere(
+                (i) => i != null && i.type == ContentType.live && !i.isAdult,
+                orElse: () => null,
+              );
+          if (mounted) {
+            setState(() {
+              _allItems = cached;
+              _allSeriesGroups = cachedGroups;
+              _selectedLiveChannel = firstLiveCached;
+              _isLoggedIn = true;
+              _isCheckingBoot = false;
+            });
+          }
+          if (firstLiveCached != null) {
+            SharedStreamEngine.instance.openStream(firstLiveCached);
+          }
+          cacheHit = true;
+        }
+      } catch (_) {}
+
+      // 2) Atualiza em segundo plano (silencioso) com a versao online
+      unawaited(_loadPlaylistFromUrl(
         savedM3u,
         fromActivationCode: activatedByCode,
-      );
+        silent: cacheHit,
+      ));
+
+      if (!cacheHit) {
+        setState(() => _isCheckingBoot = false);
+      }
     } else {
       setState(() => _isCheckingBoot = false);
     }
@@ -258,17 +290,20 @@ class _UnexRootControllerState extends State<UnexRootController> {
   Future<void> _loadPlaylistFromUrl(
     String rawUrl, {
     bool fromActivationCode = false,
+    bool silent = false,
   }) async {
     final cleanUrl = rawUrl.trim();
     if (cleanUrl.isEmpty) {
-      setState(() => _loginError = 'Informe os dados de acesso para continuar.');
+      if (!silent) setState(() => _loginError = 'Informe os dados de acesso para continuar.');
       return;
     }
 
-    setState(() {
-      _isLoadingPlaylist = true;
-      _loginError = null;
-    });
+    if (!silent) {
+      setState(() {
+        _isLoadingPlaylist = true;
+        _loginError = null;
+      });
+    }
 
     try {
       final response = await http
@@ -279,25 +314,32 @@ class _UnexRootControllerState extends State<UnexRootController> {
           .timeout(const Duration(seconds: 25));
 
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final body = response.body;
+        final body = utf8.decode(response.bodyBytes, allowMalformed: true);
         if (!body.contains('#EXTM3U') && !body.contains('#EXTINF')) {
-          setState(() {
-            _isLoadingPlaylist = false;
-            _loginError = 'Lista inválida ou credenciais incorretas.';
-          });
+          if (!silent) {
+            setState(() {
+              _isLoadingPlaylist = false;
+              _loginError = 'Lista inválida ou credenciais incorretas.';
+            });
+          }
           return;
         }
 
         final parsedItems = await compute(_parseM3uInBackground, body);
         if (parsedItems.isEmpty) {
-          setState(() {
-            _isLoadingPlaylist = false;
-            _loginError = 'Nenhum canal ou filme encontrado nesta lista.';
-          });
+          if (!silent) {
+            setState(() {
+              _isLoadingPlaylist = false;
+              _loginError = 'Nenhum canal ou filme encontrado nesta lista.';
+            });
+          }
           return;
         }
 
         final seriesGroups = _buildSeriesGroups(parsedItems);
+
+        // Salva lista em cache offline para inicializacao rapida nas proximas vezes
+        await LocalAppStorage.saveOfflinePlaylist(parsedItems);
 
         await LocalAppStorage.setString(_kPrefM3uUrl, cleanUrl);
         await LocalAppStorage.setBool(_kPrefActivatedByCode, fromActivationCode);
@@ -328,17 +370,21 @@ class _UnexRootControllerState extends State<UnexRootController> {
           SharedStreamEngine.instance.openStream(firstLive);
         }
       } else {
-        setState(() {
-          _isLoadingPlaylist = false;
-          _loginError = 'Erro ao conectar no servidor (Código ${response.statusCode}).';
-        });
+        if (!silent) {
+          setState(() {
+            _isLoadingPlaylist = false;
+            _loginError = 'Erro ao conectar no servidor (Código ${response.statusCode}).';
+          });
+        }
       }
     } catch (_) {
       if (!mounted) return;
-      setState(() {
-        _isLoadingPlaylist = false;
-        _loginError = 'Não foi possível carregar a lista. Verifique sua conexão e dados.';
-      });
+      if (!silent) {
+        setState(() {
+          _isLoadingPlaylist = false;
+          _loginError = 'Não foi possível carregar a lista. Verifique sua conexão e dados.';
+        });
+      }
     }
   }
 

@@ -604,6 +604,11 @@ class _TVLayoutScreenState extends State<TVLayoutScreen> {
                 final isSelected = cat == widget.selectedCategory;
                 return TVFocusableItem(
                   focusNode: idx == 0 ? _firstLiveCatFocusNode : null,
+                  onMoveDown: () {
+                    if (_firstLiveChannelFocusNode.canRequestFocus) {
+                      _firstLiveChannelFocusNode.requestFocus();
+                    }
+                  },
                   onMoveLeft: idx == 0 ? _focusActiveSidebarItem : null,
                   onMoveUp: () {
                     if (_liveSearchFocusNode.canRequestFocus) {
@@ -1148,6 +1153,11 @@ class _TVLayoutScreenState extends State<TVLayoutScreen> {
 
                   return TVFocusableItem(
                     focusNode: idx == 0 ? _firstVodCatFocusNode : null,
+                    onMoveDown: () {
+                      if (_firstCatalogItemFocusNode.canRequestFocus) {
+                        _firstCatalogItemFocusNode.requestFocus();
+                      }
+                    },
                     onMoveLeft: idx == 0 ? _focusActiveSidebarItem : null,
                     onMoveUp: () {
                       if (_vodSearchFocusNode.canRequestFocus) {

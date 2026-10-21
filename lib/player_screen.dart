@@ -37,6 +37,10 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
   Timer? _hideTimer;
   Timer? _seekFeedbackTimer;
   String _seekFeedbackText = '';
+  // Aceleração exponencial ao segurar ← / → no controle da TV (10→20→40→80→160s)
+  int _seekRepeatCount = 0;
+  LogicalKeyboardKey? _lastSeekKey;
+  DateTime _lastSeekTime = DateTime.now();
 
   final FocusNode _playPauseNode = FocusNode();
   final FocusNode _channelsBtnNode = FocusNode();
@@ -528,11 +532,16 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
         final isVod = currentItem.type != ContentType.live;
 
         return PopScope(
-          canPop: !showDrawer,
+          canPop: !showDrawer && !showOsd,
           onPopInvoked: (didPop) {
-            if (!didPop && showDrawer) {
+            if (didPop) return;
+            if (showDrawer) {
               setState(() => showDrawer = false);
               _focusPlayPauseAndStartTimer();
+            } else if (showOsd) {
+              // 1ª pressão de Voltar: apenas esconde os controles do player
+              _hideTimer?.cancel();
+              setState(() => showOsd = false);
             }
           },
           child: Scaffold(
@@ -567,12 +576,23 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                     _backBtnNode.hasFocus;
 
                 if (isVod && !isBottomPillFocused) {
+                  final now = DateTime.now();
+                  final isRepeat = _lastSeekKey == key &&
+                      now.difference(_lastSeekTime).inMilliseconds < 600;
+                  _lastSeekKey = key;
+                  _lastSeekTime = now;
+                  if (isRepeat) {
+                    _seekRepeatCount = (_seekRepeatCount + 1).clamp(0, 4);
+                  } else {
+                    _seekRepeatCount = 0;
+                  }
+                  final step = 10 * (1 << _seekRepeatCount); // 10, 20, 40, 80, 160s
                   if (key == LogicalKeyboardKey.arrowLeft) {
-                    _triggerQuickSeek(-10);
+                    _triggerQuickSeek(-step);
                     return KeyEventResult.handled;
                   }
                   if (key == LogicalKeyboardKey.arrowRight) {
-                    _triggerQuickSeek(10);
+                    _triggerQuickSeek(step);
                     return KeyEventResult.handled;
                   }
                 }
