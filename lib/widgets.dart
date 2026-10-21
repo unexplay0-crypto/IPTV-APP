@@ -1006,6 +1006,57 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
 // CONTROLE PARENTAL (SENHA PIN PARA CONTEÚDO ADULTO +18)
 // ===========================================================================
 const String _kParentalPinPrefKey = 'unex_parental_pin_v1';
+const String _kParentalEnabledPrefKey = 'unex_parental_enabled_v1';
+
+Future<bool> isParentalControlEnabled() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getBool(_kParentalEnabledPrefKey) ?? true;
+}
+
+Future<void> setParentalControlEnabled(bool enabled) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setBool(_kParentalEnabledPrefKey, enabled);
+}
+
+Future<void> showParentalControlSettingsDialog(
+  BuildContext context, {
+  DeviceMode deviceMode = DeviceMode.tv,
+}) async {
+  bool enabled = await isParentalControlEnabled();
+  if (!context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setDialogState) => AlertDialog(
+        backgroundColor: const Color(0xFF111520),
+        title: const Text('Controle parental'),
+        content: SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Exigir PIN para conteúdo +18'),
+          subtitle: const Text('Desative para liberar o acesso sem PIN.'),
+          value: enabled,
+          onChanged: (value) async {
+            await setParentalControlEnabled(value);
+            if (ctx.mounted) setDialogState(() => enabled = value);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Fechar'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await showChangeParentalPinDialog(context, deviceMode: deviceMode);
+            },
+            child: const Text('Alterar PIN'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 
 Future<String> _getSavedPin() async {
   final prefs = await SharedPreferences.getInstance();
@@ -1021,6 +1072,7 @@ Future<bool> showParentalPinPrompt(
   BuildContext context, {
   DeviceMode deviceMode = DeviceMode.tv,
 }) async {
+  if (!await isParentalControlEnabled()) return true;
   final savedPin = await _getSavedPin();
   if (!context.mounted) return false;
 
@@ -1177,6 +1229,7 @@ Future<void> showChangeParentalPinDialog(
         keyboardType: TextInputType.number,
         maxLength: 4,
         obscureText: true,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
         decoration: const InputDecoration(
           hintText: 'Ex: 1234',
         ),
@@ -1189,9 +1242,18 @@ Future<void> showChangeParentalPinDialog(
         ElevatedButton(
           onPressed: () async {
             final text = controller.text.trim();
-            if (text.length == 4) {
+            if (text.length == 4 && RegExp(r'^\\d{4}$').hasMatch(text)) {
               await _saveNewPin(text);
-              if (ctx.mounted) Navigator.pop(ctx);
+              if (ctx.mounted) {
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('PIN parental alterado com sucesso.')),
+                );
+              }
+            } else {
+              ScaffoldMessenger.of(ctx).showSnackBar(
+                const SnackBar(content: Text('Informe exatamente 4 números.')),
+              );
             }
           },
           child: const Text('Salvar'),

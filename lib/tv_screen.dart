@@ -448,9 +448,9 @@ class _TVLayoutScreenState extends State<TVLayoutScreen> {
                                   ),
                                 ),
                                 _buildSidebarUtilityButton(
-                                  icon: Icons.lock_outline_rounded,
-                                  label: 'PIN +18',
-                                  onTap: () => showChangeParentalPinDialog(
+                                  icon: Icons.shield_outlined,
+                                  label: 'Controle +18',
+                                  onTap: () => showParentalControlSettingsDialog(
                                     context,
                                     deviceMode: DeviceMode.tv,
                                   ),

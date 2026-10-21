@@ -175,14 +175,18 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
                     child: Divider(color: Colors.white10),
                   ),
                   ListTile(
-                    leading: const Icon(Icons.lock_person_rounded, color: Colors.white70),
+                    leading: const Icon(Icons.shield_outlined, color: Colors.white70),
                     title: const Text(
-                      'Senha Parental (+18)',
+                      'Controle parental (+18)',
                       style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold, fontSize: 13.5),
+                    ),
+                    subtitle: const Text(
+                      'Ativar/desativar proteção e alterar PIN',
+                      style: TextStyle(color: Colors.white38, fontSize: 11),
                     ),
                     onTap: () {
                       Navigator.pop(context);
-                      showChangeParentalPinDialog(context, deviceMode: DeviceMode.mobile);
+                      showParentalControlSettingsDialog(context, deviceMode: DeviceMode.mobile);
                     },
                   ),
                   if (widget.onSwitchToTVMode != null)
@@ -269,7 +273,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
       children: [
         // 1. BARRA SUPERIOR COMPACTA
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
           color: const Color(0xFF0D1018),
           child: Row(
             children: [
@@ -280,7 +284,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
               Expanded(
                 child: Text(
                   widget.sectionTitle,
-                  style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900),
                 ),
               ),
               if (widget.onRefreshPlaylist != null)
@@ -297,8 +301,8 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
         if (widget.activeItem != null && widget.activeSection == MainSection.live)
           GestureDetector(
             onTap: () => _handleItemTap(widget.activeItem!, openFull: true),
-            child: AspectRatio(
-              aspectRatio: 16 / 9,
+            child: SizedBox(
+              height: 150,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
@@ -392,9 +396,9 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
         // 3. BARRA DE PESQUISA
         Padding(
-          padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+          padding: const EdgeInsets.fromLTRB(10, 4, 10, 3),
           child: Container(
-            height: 44,
+            height: 38,
             padding: const EdgeInsets.symmetric(horizontal: 14),
             decoration: BoxDecoration(
               color: const Color(0xFF12151F),
@@ -423,7 +427,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
 
         // 4. CARROSSEL HORIZONTAL DE CATEGORIAS
         SizedBox(
-          height: 38,
+          height: 34,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -454,7 +458,7 @@ class _MobileDashboardViewState extends State<MobileDashboardView> {
             },
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 4),
 
         // 5. GRADE OU LISTA DE CONTEÚDOS
         Expanded(
