@@ -1,399 +1,638 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:video_player/video_player.dart';
 import 'core.dart';
 import 'widgets.dart';
 
-class TVDashboardView extends StatefulWidget {
-  final bool isSideMenuOpen;
-  final VoidCallback onOpenSideMenu;
-  final VoidCallback onCloseSideMenu;
-  final MainSection activeSection;
-  final String sectionTitle;
+class TVLayoutScreen extends StatefulWidget {
+  final int activeSection; // 0: TV ao Vivo, 1: Filmes, 2: Séries, 3: Favoritos, 4: Histórico
+  final ValueChanged<int> onSectionChanged;
   final String selectedCategory;
-  final List<String> sectionCategories;
-  final Map<String, int> categoryCounts;
-  final List<StreamItem> displayedItems;
-  final List<SeriesGroup> displayedSeries;
-  final Map<String, VodProgressEntry> vodProgressMap;
-  final Set<String> favoriteIds;
-  final StreamItem? activeItem;
-  final EpgProgramInfo? activeEpg;
-  final Widget miniVideoWidget;
-  final ValueChanged<MainSection> onSelectSection;
-  final ValueChanged<String> onSelectCategory;
-  final ValueChanged<StreamItem> onStartPreview;
-  final ValueChanged<StreamItem> onOpenFullScreen;
-  final ValueChanged<SeriesGroup> onSelectSeriesGroup;
-  final ValueChanged<StreamItem> onToggleFavorite;
-  final TextEditingController? searchController;
+  final List<String> categories;
+  final ValueChanged<String> onCategorySelected;
+  final TextEditingController searchController;
   final String searchQuery;
-  final ValueChanged<String>? onSearchChanged;
-  final VoidCallback? onClearSearch;
-  final VoidCallback? onRefreshPlaylist;
-  final VoidCallback? onLogout;
+  final ValueChanged<String> onSearchChanged;
+  final List<StreamItem> filteredItems;
+  final List<SeriesGroup> groupedSeries;
+  final StreamItem? selectedLiveChannel;
+  final ValueChanged<StreamItem> onLiveChannelSelected;
+  final void Function(StreamItem item, List<StreamItem> playlist) onOpenFullScreen;
+  final ValueChanged<StreamItem> onOpenMovieDetails;
+  final ValueChanged<SeriesGroup> onOpenSeriesDetails;
+  final Set<String> favorites;
+  final ValueChanged<String> onToggleFavorite;
+  final Map<String, double> watchProgress;
+  final bool isAdultUnlocked;
+  final Future<bool> Function() onUnlockAdult;
+  final VoidCallback onRefreshPlaylist;
+  final VoidCallback onSwitchAccount;
 
-  const TVDashboardView({
+  const TVLayoutScreen({
     super.key,
-    required this.isSideMenuOpen,
-    required this.onOpenSideMenu,
-    required this.onCloseSideMenu,
     required this.activeSection,
-    required this.sectionTitle,
+    required this.onSectionChanged,
     required this.selectedCategory,
-    required this.sectionCategories,
-    required this.categoryCounts,
-    required this.displayedItems,
-    required this.displayedSeries,
-    required this.vodProgressMap,
-    required this.favoriteIds,
-    required this.activeItem,
-    this.activeEpg,
-    required this.miniVideoWidget,
-    required this.onSelectSection,
-    required this.onSelectCategory,
-    required this.onStartPreview,
+    required this.categories,
+    required this.onCategorySelected,
+    required this.searchController,
+    required this.searchQuery,
+    required this.onSearchChanged,
+    required this.filteredItems,
+    required this.groupedSeries,
+    required this.selectedLiveChannel,
+    required this.onLiveChannelSelected,
     required this.onOpenFullScreen,
-    required this.onSelectSeriesGroup,
+    required this.onOpenMovieDetails,
+    required this.onOpenSeriesDetails,
+    required this.favorites,
     required this.onToggleFavorite,
-    this.searchController,
-    this.searchQuery = '',
-    this.onSearchChanged,
-    this.onClearSearch,
-    this.onRefreshPlaylist,
-    this.onLogout,
+    required this.watchProgress,
+    required this.isAdultUnlocked,
+    required this.onUnlockAdult,
+    required this.onRefreshPlaylist,
+    required this.onSwitchAccount,
   });
 
   @override
-  State<TVDashboardView> createState() => _TVDashboardViewState();
+  State<TVLayoutScreen> createState() => _TVLayoutScreenState();
 }
 
-class _TVDashboardViewState extends State<TVDashboardView> {
-  final FocusNode _sideMenuFocus = FocusNode();
-  final FocusNode _liveAllCategoryFocusNode = FocusNode();
+class _TVLayoutScreenState extends State<TVLayoutScreen> {
+  final SharedStreamEngine _engine = SharedStreamEngine.instance;
+
+  // Nós de foco para as 5 seções principais do Menu Lateral
+  late final List<FocusNode> _navFocusNodes;
+
+  // Nós de foco estratégicos para navegação por controle remoto
+  final FocusNode _firstLiveCatFocusNode = FocusNode();
+  final FocusNode _firstVodCatFocusNode = FocusNode();
   final FocusNode _vodSearchFocusNode = FocusNode();
-  final FocusNode _firstPosterFocusNode = FocusNode();
+  final FocusNode _liveSearchFocusNode = FocusNode();
+  final FocusNode _firstCatalogItemFocusNode = FocusNode();
+  final FocusNode _firstLiveChannelFocusNode = FocusNode();
+  final FocusNode _previewFullScreenBtnNode = FocusNode();
 
+  // Controladores de rolagem para categorias e listas
   final ScrollController _liveCategoryScrollController = ScrollController();
-  final ScrollController _vodScrollController = ScrollController();
-  final ScrollController _liveChannelsScrollController = ScrollController();
+  final ScrollController _vodCategoryScrollController = ScrollController();
+  final ScrollController _channelListScrollController = ScrollController();
+  final ScrollController _catalogCarouselScrollController = ScrollController();
 
-  StreamItem? _focusedVodItem;
-  SeriesGroup? _focusedSeriesGroup;
-  bool _adultUnlocked = false;
-
-  final Color _bgColor = const Color(0xFF090B10);
-  final Color _panelColor = const Color(0xFF111520);
-  final Color _cardColor = const Color(0xFF161B2A);
-  final Color _accentColor = const Color(0xFF00E5FF);
-  final Color _secondaryAccent = const Color(0xFF7C4DFF);
+  // Flag para mover o foco automaticamente ao 1º item após selecionar uma categoria
+  bool _pendingFocusFirstCatalogItem = false;
 
   @override
   void initState() {
     super.initState();
-    _syncInitialHeroItem();
+    _navFocusNodes = List.generate(5, (_) => FocusNode());
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (widget.isSideMenuOpen) {
-        _requestSideMenuFocus();
-      } else {
-        _focusDefaultElementForCurrentSection();
-      }
+      _applyInitialSectionFocus();
     });
   }
 
   @override
-  void didUpdateWidget(covariant TVDashboardView oldWidget) {
+  void didUpdateWidget(covariant TVLayoutScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    // 1. Se o menu lateral acabou de ser aberto (ex: ao apertar o botão Voltar na TV),
-    // direciona o foco imediatamente para a opção ativa no menu lateral!
-    if (!oldWidget.isSideMenuOpen && widget.isSideMenuOpen) {
-      _requestSideMenuFocus();
-      return;
-    }
-
-    // 2. Se a seção mudou ou o menu lateral acabou de fechar, aplica a regra de foco da aba
-    if (oldWidget.activeSection != widget.activeSection ||
-        (oldWidget.isSideMenuOpen && !widget.isSideMenuOpen)) {
-      _syncInitialHeroItem();
+    if (oldWidget.activeSection != widget.activeSection) {
+      _pendingFocusFirstCatalogItem = false;
       _resetScrollPositions();
-      if (!widget.isSideMenuOpen) {
-        _focusDefaultElementForCurrentSection();
-      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _applyInitialSectionFocus();
+      });
       return;
     }
 
-    // 3. Se apenas a categoria ou a busca mudou, reseta a rolagem dos itens para o início
-    if (oldWidget.selectedCategory != widget.selectedCategory ||
-        oldWidget.searchQuery != widget.searchQuery) {
-      _syncInitialHeroItem();
-      _resetContentScrollOnly();
+    if (oldWidget.selectedCategory != widget.selectedCategory) {
+      if (_catalogCarouselScrollController.hasClients) {
+        _catalogCarouselScrollController.jumpTo(0);
+      }
+      if (_channelListScrollController.hasClients) {
+        _channelListScrollController.jumpTo(0);
+      }
+    }
+
+    if (_pendingFocusFirstCatalogItem) {
+      _pendingFocusFirstCatalogItem = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _focusFirstItemOfSelectedCategory();
+      });
     }
   }
 
   @override
   void dispose() {
-    _sideMenuFocus.dispose();
-    _liveAllCategoryFocusNode.dispose();
+    for (final node in _navFocusNodes) {
+      node.dispose();
+    }
+    _firstLiveCatFocusNode.dispose();
+    _firstVodCatFocusNode.dispose();
     _vodSearchFocusNode.dispose();
-    _firstPosterFocusNode.dispose();
+    _liveSearchFocusNode.dispose();
+    _firstCatalogItemFocusNode.dispose();
+    _firstLiveChannelFocusNode.dispose();
+    _previewFullScreenBtnNode.dispose();
+
     _liveCategoryScrollController.dispose();
-    _vodScrollController.dispose();
-    _liveChannelsScrollController.dispose();
+    _vodCategoryScrollController.dispose();
+    _channelListScrollController.dispose();
+    _catalogCarouselScrollController.dispose();
     super.dispose();
   }
 
-  /// Posiciona o foco exatamente no item ativo do menu lateral
-  void _requestSideMenuFocus() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _sideMenuFocus.canRequestFocus) {
-        _sideMenuFocus.requestFocus();
-      }
-    });
-    Future.delayed(const Duration(milliseconds: 70), () {
-      if (mounted && widget.isSideMenuOpen && _sideMenuFocus.canRequestFocus) {
-        _sideMenuFocus.requestFocus();
-      }
-    });
-  }
-
-  /// Regra de foco ao entrar numa aba:
-  /// - TV ao Vivo -> Foca na categoria "Todas"
-  /// - Filmes / Séries -> Foca no botão "Pesquisar" no canto superior esquerdo
-  void _focusDefaultElementForCurrentSection() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (widget.activeSection == MainSection.live) {
-        if (_liveCategoryScrollController.hasClients) {
-          _liveCategoryScrollController.jumpTo(0.0);
-        }
-        if (_liveAllCategoryFocusNode.canRequestFocus) {
-          _liveAllCategoryFocusNode.requestFocus();
-        }
-      } else {
-        if (_vodSearchFocusNode.canRequestFocus) {
-          _vodSearchFocusNode.requestFocus();
-        } else if (_firstPosterFocusNode.canRequestFocus) {
-          _firstPosterFocusNode.requestFocus();
-        }
-      }
-    });
-  }
-
-  void _syncInitialHeroItem() {
-    if (widget.activeSection == MainSection.series) {
-      _focusedSeriesGroup = widget.displayedSeries.isNotEmpty ? widget.displayedSeries.first : null;
-    } else if (widget.activeSection != MainSection.live) {
-      _focusedVodItem = widget.displayedItems.isNotEmpty ? widget.displayedItems.first : null;
+  void _resetScrollPositions() {
+    if (_liveCategoryScrollController.hasClients) {
+      _liveCategoryScrollController.jumpTo(0);
+    }
+    if (_vodCategoryScrollController.hasClients) {
+      _vodCategoryScrollController.jumpTo(0);
+    }
+    if (_channelListScrollController.hasClients) {
+      _channelListScrollController.jumpTo(0);
+    }
+    if (_catalogCarouselScrollController.hasClients) {
+      _catalogCarouselScrollController.jumpTo(0);
     }
   }
 
-  void _resetScrollPositions() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_liveCategoryScrollController.hasClients) {
-        _liveCategoryScrollController.jumpTo(0.0);
+  /// Regras de Foco ao entrar em cada seção:
+  /// - TV ao Vivo (0): Foco na primeira categoria ("Todas").
+  /// - Filmes (1) e Séries (2): Foco na barra de pesquisa ("Pesquisar").
+  /// - Favoritos (3): Foco na primeira subcategoria ("Canais").
+  /// - Histórico (4): Foco no primeiro item ou no menu.
+  void _applyInitialSectionFocus() {
+    if (!mounted) return;
+    if (widget.activeSection == 0) {
+      if (_firstLiveCatFocusNode.canRequestFocus) {
+        _firstLiveCatFocusNode.requestFocus();
       }
-      if (_vodScrollController.hasClients) {
-        _vodScrollController.jumpTo(0.0);
+    } else if (widget.activeSection == 1 || widget.activeSection == 2) {
+      if (_vodSearchFocusNode.canRequestFocus) {
+        _vodSearchFocusNode.requestFocus();
       }
-      if (_liveChannelsScrollController.hasClients) {
-        _liveChannelsScrollController.jumpTo(0.0);
+    } else if (widget.activeSection == 3) {
+      if (_firstVodCatFocusNode.canRequestFocus) {
+        _firstVodCatFocusNode.requestFocus();
       }
-    });
+    } else if (widget.activeSection == 4) {
+      if (widget.filteredItems.isNotEmpty && _firstCatalogItemFocusNode.canRequestFocus) {
+        _firstCatalogItemFocusNode.requestFocus();
+      } else if (_vodSearchFocusNode.canRequestFocus) {
+        _vodSearchFocusNode.requestFocus();
+      }
+    }
   }
 
-  void _resetContentScrollOnly() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_vodScrollController.hasClients) {
-        _vodScrollController.jumpTo(0.0);
+  /// Move o foco automaticamente para o primeiro filme, série ou canal
+  /// quando o usuário seleciona uma categoria.
+  void _focusFirstItemOfSelectedCategory() {
+    if (!mounted) return;
+
+    if (_isFavoritesLiveSubcategory) {
+      if (widget.filteredItems.isNotEmpty && _firstLiveChannelFocusNode.canRequestFocus) {
+        _firstLiveChannelFocusNode.requestFocus();
       }
-      if (_liveChannelsScrollController.hasClients) {
-        _liveChannelsScrollController.jumpTo(0.0);
-      }
-    });
+      return;
+    }
+
+    final hasCatalogItems = _isDisplayingSeries
+        ? widget.groupedSeries.isNotEmpty
+        : widget.filteredItems.isNotEmpty;
+
+    if (hasCatalogItems && _firstCatalogItemFocusNode.canRequestFocus) {
+      _firstCatalogItemFocusNode.requestFocus();
+    }
   }
 
-  /// Sempre que o usuário aperta para baixo na barra superior de Filmes/Séries,
-  /// rebobina o carrossel para o início e foca no 1º card da categoria selecionada
-  void _focusFirstPosterFromCategory() {
-    if (_vodScrollController.hasClients) {
-      _vodScrollController.animateTo(
-        0.0,
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
+  void _focusActiveSidebarItem() {
+    final idx = widget.activeSection.clamp(0, _navFocusNodes.length - 1);
+    if (_navFocusNodes[idx].canRequestFocus) {
+      _navFocusNodes[idx].requestFocus();
+    }
+  }
+
+  bool get _isSidebarFocused => _navFocusNodes.any((n) => n.hasFocus);
+
+  bool get _isFavoritesLiveSubcategory =>
+      widget.activeSection == 3 &&
+      (widget.selectedCategory == 'Canais' || widget.selectedCategory == 'TV ao Vivo');
+
+  bool get _isFavoritesSeriesSubcategory =>
+      widget.activeSection == 3 && widget.selectedCategory == 'Séries';
+
+  bool get _isDisplayingSeries =>
+      widget.activeSection == 2 || _isFavoritesSeriesSubcategory;
+
+  bool _isSeriesFavorited(SeriesGroup series) {
+    if (widget.favorites.contains('series:${series.title}')) return true;
+    for (final epList in series.seasons.values) {
+      for (final ep in epList) {
+        if (widget.favorites.contains(ep.id)) return true;
+      }
+    }
+    return false;
+  }
+
+  void _handleToggleSeriesFavorite(SeriesGroup series) {
+    final allEps = series.seasons.values.expand((e) => e).toList();
+    final favEps = allEps.where((ep) => widget.favorites.contains(ep.id)).toList();
+    final hasSyntheticKey = widget.favorites.contains('series:${series.title}');
+
+    if (favEps.isNotEmpty || hasSyntheticKey) {
+      for (final ep in favEps) {
+        widget.onToggleFavorite(ep.id);
+      }
+      if (hasSyntheticKey) {
+        widget.onToggleFavorite('series:${series.title}');
+      }
+      showQuickFavoriteToast(
+        context,
+        title: series.title,
+        isAdded: false,
+      );
+    } else if (allEps.isNotEmpty) {
+      widget.onToggleFavorite(allEps.first.id);
+      showQuickFavoriteToast(
+        context,
+        title: series.title,
+        isAdded: true,
       );
     }
-    _syncInitialHeroItem();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _firstPosterFocusNode.canRequestFocus) {
-        _firstPosterFocusNode.requestFocus();
-      }
-    });
   }
 
-  void _focusSideMenuNow() {
-    if (!widget.isSideMenuOpen) {
-      widget.onOpenSideMenu();
-    }
-    _requestSideMenuFocus();
-  }
-
-  void _updateFocusedVod(StreamItem item) {
-    if (_focusedVodItem?.id != item.id) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) setState(() => _focusedVodItem = item);
-      });
-    }
-  }
-
-  void _updateFocusedSeries(SeriesGroup series) {
-    if (_focusedSeriesGroup?.id != series.id) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) setState(() => _focusedSeriesGroup = series);
-      });
-    }
-  }
-
-  bool _isCategoryAdult(String cat) {
-    final lower = cat.toLowerCase();
-    return lower.contains('adult') ||
-        lower.contains('+18') ||
-        lower.contains('18+') ||
-        lower.contains('xxx') ||
-        lower.contains('erot');
-  }
-
-  Future<void> _handleCategorySelect(String cat, {bool resetVodCarousel = false}) async {
-    if (_isCategoryAdult(cat) && !_adultUnlocked) {
-      final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
-      if (!unlocked || !mounted) return;
-      setState(() => _adultUnlocked = true);
-    }
-    widget.onSelectCategory(cat);
-    if (resetVodCarousel && _vodScrollController.hasClients) {
-      _vodScrollController.jumpTo(0.0);
-    }
-  }
-
-  // Pré-visualização sob demanda: 1º clique inicia no mini-player; 2º clique expande para Tela Cheia
-  Future<void> _handleChannelSelect(StreamItem item) async {
-    if (item.isAdult && !_adultUnlocked) {
-      final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
-      if (!unlocked || !mounted) return;
-      setState(() => _adultUnlocked = true);
-    }
-
-    if (widget.activeItem?.id == item.id) {
-      widget.onOpenFullScreen(item);
-    } else {
-      widget.onStartPreview(item);
-    }
-  }
-
-  Future<void> _handleVodSelect(StreamItem item) async {
-    if (item.isAdult && !_adultUnlocked) {
-      final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
-      if (!unlocked || !mounted) return;
-      setState(() => _adultUnlocked = true);
-    }
-    widget.onStartPreview(item);
-  }
-
-  Future<void> _handleFullScreen(StreamItem item) async {
-    if (item.isAdult && !_adultUnlocked) {
-      final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
-      if (!unlocked || !mounted) return;
-      setState(() => _adultUnlocked = true);
-    }
-    widget.onOpenFullScreen(item);
-  }
-
-  Future<void> _handleSeriesSelect(SeriesGroup series) async {
-    if (series.isAdult && !_adultUnlocked) {
-      final unlocked = await showParentalPinPrompt(context, deviceMode: DeviceMode.tv);
-      if (!unlocked || !mounted) return;
-      setState(() => _adultUnlocked = true);
-    }
-    widget.onSelectSeriesGroup(series);
-  }
-
-  void _openSearchKeyboard() {
-    if (widget.searchController == null) return;
-    showTVVirtualKeyboard(
+  void _handleToggleItemFavorite(StreamItem item) {
+    final isCurrentlyFav = widget.favorites.contains(item.id);
+    widget.onToggleFavorite(item.id);
+    showQuickFavoriteToast(
       context,
-      widget.searchController!,
-      'Pesquisar em ${widget.sectionTitle}',
-      onChanged: widget.onSearchChanged,
+      title: item.name,
+      isAdded: !isCurrentlyFav,
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final isLive = widget.activeSection == MainSection.live;
-
-    return Scaffold(
-      backgroundColor: _bgColor,
-      body: Row(
-        children: [
-          // 1. MENU LATERAL COM EXPANSÃO E RECOLHIMENTO SUAVES
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 260),
-            curve: Curves.easeOutCubic,
-            width: widget.isSideMenuOpen ? 235 : 62,
-            decoration: BoxDecoration(
-              color: _panelColor,
-              border: Border(right: BorderSide(color: Colors.white.withOpacity(0.07))),
-              boxShadow: widget.isSideMenuOpen
-                  ? [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.65),
-                        blurRadius: 20,
-                        offset: const Offset(6, 0),
-                      ),
-                    ]
-                  : null,
+    return PopScope(
+      canPop: _isSidebarFocused,
+      onPopInvoked: (didPop) {
+        if (!didPop && !_isSidebarFocused) {
+          _focusActiveSidebarItem();
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF07090E),
+        body: Row(
+          children: [
+            _buildLeftNavigationRail(),
+            Expanded(
+              child: widget.activeSection == 0
+                  ? _buildLiveTVSection()
+                  : _buildCatalogAndFavoritesSection(),
             ),
-            child: ClipRect(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 200),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                child: widget.isSideMenuOpen
-                    ? SizedBox(
-                        key: const ValueKey('menu_expanded'),
-                        width: 235,
-                        child: _buildExpandedMenu(),
-                      )
-                    : SizedBox(
-                        key: const ValueKey('menu_collapsed'),
-                        width: 62,
-                        child: _buildCollapsedRail(),
-                      ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // MENU LATERAL ESQUERDO (COM TESTE DE VELOCIDADE INTEGRADO)
+  // ===========================================================================
+  Widget _buildLeftNavigationRail() {
+    final navItems = [
+      {'icon': Icons.live_tv_rounded, 'label': 'TV ao Vivo', 'index': 0},
+      {'icon': Icons.movie_creation_rounded, 'label': 'Filmes', 'index': 1},
+      {'icon': Icons.video_library_rounded, 'label': 'Séries', 'index': 2},
+      {'icon': Icons.star_rounded, 'label': 'Favoritos', 'index': 3},
+      {'icon': Icons.history_rounded, 'label': 'Histórico', 'index': 4},
+    ];
+
+    return Container(
+      width: 106,
+      decoration: BoxDecoration(
+        color: const Color(0xFF0C0F17),
+        border: Border(
+          right: BorderSide(color: Colors.white.withOpacity(0.06), width: 1),
+        ),
+      ),
+      child: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 12),
+            // Logo UNEX
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF00E5FF), Color(0xFF0088FF)],
+                ),
+                borderRadius: BorderRadius.circular(10),
               ),
+              child: const Text(
+                'UNEX',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.black,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Seções Principais e Ações Inferiores ajustáveis sem overflow
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  return SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(minHeight: constraints.maxHeight - 8),
+                      child: IntrinsicHeight(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            // 5 Abas Principais
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: navItems.map((item) {
+                                final int idx = item['index'] as int;
+                                final bool isSelected = widget.activeSection == idx;
+                                return TVFocusableItem(
+                                  focusNode: _navFocusNodes[idx],
+                                  autoScroll: false,
+                                  onMoveRight: _applyInitialSectionFocus,
+                                  onSelect: () {
+                                    if (widget.activeSection != idx) {
+                                      widget.onSectionChanged(idx);
+                                    } else {
+                                      _applyInitialSectionFocus();
+                                    }
+                                  },
+                                  builder: (context, isFocused) => AnimatedContainer(
+                                    duration: const Duration(milliseconds: 150),
+                                    width: 86,
+                                    margin: const EdgeInsets.symmetric(vertical: 3.5),
+                                    padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+                                    decoration: BoxDecoration(
+                                      color: isFocused
+                                          ? const Color(0xFF00E5FF)
+                                          : isSelected
+                                              ? const Color(0xFF00E5FF).withOpacity(0.14)
+                                              : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(12),
+                                      border: Border.all(
+                                        color: isFocused
+                                            ? Colors.white
+                                            : isSelected
+                                                ? const Color(0xFF00E5FF).withOpacity(0.45)
+                                                : Colors.transparent,
+                                        width: isFocused ? 1.8 : 1.0,
+                                      ),
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          item['icon'] as IconData,
+                                          size: 20,
+                                          color: isFocused
+                                              ? Colors.black
+                                              : isSelected
+                                                  ? const Color(0xFF00E5FF)
+                                                  : Colors.white60,
+                                        ),
+                                        const SizedBox(height: 3),
+                                        Text(
+                                          item['label'] as String,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: isFocused || isSelected
+                                                ? FontWeight.w800
+                                                : FontWeight.w500,
+                                            color: isFocused
+                                                ? Colors.black
+                                                : isSelected
+                                                    ? Colors.white
+                                                    : Colors.white60,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
+                            ),
+
+                            // Utilitários Inferiores (Inclui Teste de Velocidade)
+                            Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Divider(
+                                  color: Colors.white.withOpacity(0.08),
+                                  indent: 18,
+                                  endIndent: 18,
+                                  height: 12,
+                                ),
+                                _buildSidebarUtilityButton(
+                                  icon: Icons.speed_rounded,
+                                  label: 'Velocidade',
+                                  accentColor: const Color(0xFF00E5FF),
+                                  onTap: () => showSpeedTestDialog(
+                                    context,
+                                    deviceMode: DeviceMode.tv,
+                                  ),
+                                ),
+                                _buildSidebarUtilityButton(
+                                  icon: Icons.lock_outline_rounded,
+                                  label: 'PIN +18',
+                                  onTap: () => showChangeParentalPinDialog(
+                                    context,
+                                    deviceMode: DeviceMode.tv,
+                                  ),
+                                ),
+                                _buildSidebarUtilityButton(
+                                  icon: Icons.refresh_rounded,
+                                  label: 'Atualizar',
+                                  onTap: widget.onRefreshPlaylist,
+                                ),
+                                _buildSidebarUtilityButton(
+                                  icon: Icons.logout_rounded,
+                                  label: 'Trocar Lista',
+                                  onTap: widget.onSwitchAccount,
+                                ),
+                                const SizedBox(height: 6),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSidebarUtilityButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    Color? accentColor,
+  }) {
+    return TVFocusableItem(
+      autoScroll: false,
+      onMoveRight: _applyInitialSectionFocus,
+      onSelect: onTap,
+      builder: (context, isFocused) => AnimatedContainer(
+        duration: const Duration(milliseconds: 140),
+        width: 86,
+        margin: const EdgeInsets.symmetric(vertical: 2.5),
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+        decoration: BoxDecoration(
+          color: isFocused ? const Color(0xFF00E5FF) : Colors.white.withOpacity(0.03),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isFocused ? Colors.white : Colors.transparent,
+            width: 1.4,
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 16,
+              color: isFocused ? Colors.black : (accentColor ?? Colors.white54),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: isFocused ? FontWeight.w800 : FontWeight.w500,
+                color: isFocused ? Colors.black : Colors.white60,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ===========================================================================
+  // SEÇÃO 0: TV AO VIVO (CATEGORIAS NO TOPO + LISTA DE CANAIS + PRÉVIA FLUIDA)
+  // ===========================================================================
+  Widget _buildLiveTVSection() {
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Topo: Título + Dica de Favoritos + Busca + Barra Horizontal de Categorias
+          Padding(
+            padding: const EdgeInsets.fromLTRB(22, 16, 22, 8),
+            child: Row(
+              children: [
+                const Icon(Icons.live_tv_rounded, color: Color(0xFF00E5FF), size: 24),
+                const SizedBox(width: 10),
+                const Text(
+                  'TV ao Vivo',
+                  style: TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.amber.withOpacity(0.4)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.star_rounded, color: Colors.amber, size: 14),
+                      SizedBox(width: 5),
+                      Text(
+                        'Segure OK para Favoritar',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.amber,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(),
+                _buildSearchButton(
+                  focusNode: _liveSearchFocusNode,
+                  title: 'Pesquisar Canal ao Vivo',
+                  onMoveDown: () {
+                    if (_firstLiveCatFocusNode.canRequestFocus) {
+                      _firstLiveCatFocusNode.requestFocus();
+                    }
+                  },
+                ),
+              ],
             ),
           ),
 
-          // 2. CORPO PRINCIPAL COM TRANSIÇÃO FLUIDA ENTRE PÁGINAS/SEÇÕES
-          Expanded(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 280),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              transitionBuilder: (child, animation) {
-                return FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(
-                    position: Tween<Offset>(
-                      begin: const Offset(0.015, 0.0),
-                      end: Offset.zero,
-                    ).animate(animation),
-                    child: child,
+          // Barra de Categorias da TV ao Vivo
+          SizedBox(
+            height: 44,
+            child: ListView.builder(
+              controller: _liveCategoryScrollController,
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 22),
+              itemCount: widget.categories.length,
+              itemBuilder: (context, idx) {
+                final cat = widget.categories[idx];
+                final isSelected = cat == widget.selectedCategory;
+                return TVFocusableItem(
+                  focusNode: idx == 0 ? _firstLiveCatFocusNode : null,
+                  onMoveLeft: idx == 0 ? _focusActiveSidebarItem : null,
+                  onMoveUp: () {
+                    if (_liveSearchFocusNode.canRequestFocus) {
+                      _liveSearchFocusNode.requestFocus();
+                    }
+                  },
+                  onMoveDown: () {
+                    if (_firstLiveChannelFocusNode.canRequestFocus) {
+                      _firstLiveChannelFocusNode.requestFocus();
+                    }
+                  },
+                  onSelect: () => widget.onCategorySelected(cat),
+                  builder: (context, isFocused) => _buildCategoryPill(
+                    label: cat,
+                    isSelected: isSelected,
+                    isFocused: isFocused,
                   ),
                 );
               },
-              child: KeyedSubtree(
-                key: ValueKey('section_${widget.activeSection.name}'),
-                child: isLive ? _buildLiveTVLayout() : _buildImmersiveVodLayout(),
-              ),
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // Área Principal: Lista de Canais (Esquerda) + Painel de Pré-visualização (Direita)
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(22, 0, 22, 16),
+              child: _buildLiveChannelsAndPreviewBody(),
             ),
           ),
         ],
@@ -401,1062 +640,844 @@ class _TVDashboardViewState extends State<TVDashboardView> {
     );
   }
 
-  // ===========================================================================
-  // MODO 1: TV AO VIVO (FOCO EM "TODAS" + 1 COLUNA LARGA DE CANAIS)
-  // ===========================================================================
-  Widget _buildLiveTVLayout() {
+  /// Corpo compartilhado entre TV ao Vivo e a subcategoria "Canais" de Favoritos
+  Widget _buildLiveChannelsAndPreviewBody() {
+    if (widget.filteredItems.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              widget.activeSection == 3 ? Icons.star_border_rounded : Icons.tv_off_rounded,
+              size: 52,
+              color: Colors.white24,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              widget.activeSection == 3
+                  ? 'Nenhum canal favorito adicionado ainda.\nNa TV ao Vivo, segure o botão OK sobre um canal para favoritar!'
+                  : 'Nenhum canal encontrado nesta categoria.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white54, fontSize: 13.5, height: 1.4),
+            ),
+          ],
+        ),
+      );
+    }
+
     return Row(
       children: [
-        // COLUNA 1: CATEGORIAS (SEMPRE DIRECIONA O FOCO PARA "TODAS" AO ENTRAR NA ABA)
-        Container(
-          width: 235,
-          color: _bgColor,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 18, 12, 10),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      'CATEGORIAS',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.white.withOpacity(0.55),
-                        letterSpacing: 1.4,
+        // Coluna Esquerda: Lista de Canais (com fonte 13.5 e suporte a segurar OK para favoritar)
+        Expanded(
+          flex: 46,
+          child: Container(
+            decoration: BoxDecoration(
+              color: const Color(0xFF0E121B),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withOpacity(0.06)),
+            ),
+            child: ListView.builder(
+              controller: _channelListScrollController,
+              padding: const EdgeInsets.all(10),
+              itemCount: widget.filteredItems.length,
+              itemBuilder: (context, idx) {
+                final channel = widget.filteredItems[idx];
+                final isSelected = widget.selectedLiveChannel?.id == channel.id;
+                final isFav = widget.favorites.contains(channel.id);
+                final isLocked = channel.isAdult && !widget.isAdultUnlocked;
+
+                return TVFocusableItem(
+                  focusNode: idx == 0 ? _firstLiveChannelFocusNode : null,
+                  onMoveLeft: _focusActiveSidebarItem,
+                  onMoveRight: () {
+                    if (_previewFullScreenBtnNode.canRequestFocus) {
+                      _previewFullScreenBtnNode.requestFocus();
+                    }
+                  },
+                  onMoveUp: idx == 0
+                      ? () {
+                          if (widget.activeSection == 0 &&
+                              _firstLiveCatFocusNode.canRequestFocus) {
+                            _firstLiveCatFocusNode.requestFocus();
+                          } else if (widget.activeSection == 3 &&
+                              _firstVodCatFocusNode.canRequestFocus) {
+                            _firstVodCatFocusNode.requestFocus();
+                          }
+                        }
+                      : null,
+                  onSelect: () async {
+                    if (isLocked) {
+                      final ok = await widget.onUnlockAdult();
+                      if (!ok) return;
+                    }
+                    if (isSelected) {
+                      widget.onOpenFullScreen(channel, widget.filteredItems);
+                    } else {
+                      widget.onLiveChannelSelected(channel);
+                    }
+                  },
+                  onLongSelect: () => _handleToggleItemFavorite(channel),
+                  builder: (context, isFocused) => AnimatedContainer(
+                    duration: const Duration(milliseconds: 140),
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                    decoration: BoxDecoration(
+                      color: isFocused
+                          ? const Color(0xFF00E5FF).withOpacity(0.18)
+                          : isSelected
+                              ? Colors.white.withOpacity(0.07)
+                              : Colors.transparent,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isFocused
+                            ? const Color(0xFF00E5FF)
+                            : isSelected
+                                ? const Color(0xFF00E5FF).withOpacity(0.4)
+                                : Colors.transparent,
+                        width: isFocused ? 2.0 : 1.0,
                       ),
                     ),
-                    if (widget.searchController != null)
-                      TVIconButton(
-                        icon: Icons.search_rounded,
-                        color: _accentColor,
-                        size: 18,
-                        onPressed: _openSearchKeyboard,
-                      ),
-                  ],
-                ),
-              ),
-              if (widget.searchQuery.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  child: TVFocusableItem(
-                    autoScroll: false,
-                    onSelect: () => widget.onClearSearch?.call(),
-                    builder: (c, f) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.redAccent.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: f ? Colors.white : Colors.redAccent),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              'Busca: "${widget.searchQuery}"',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 11, color: Colors.white),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 28,
+                          alignment: Alignment.center,
+                          child: Text(
+                            '${idx + 1}',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w800,
+                              color: isSelected || isFocused
+                                  ? const Color(0xFF00E5FF)
+                                  : Colors.white38,
                             ),
                           ),
-                          const Icon(Icons.close, size: 14, color: Colors.redAccent),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              Expanded(
-                child: ListView.builder(
-                  controller: _liveCategoryScrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  itemCount: widget.sectionCategories.length,
-                  itemBuilder: (context, idx) {
-                    final cat = widget.sectionCategories[idx];
-                    final count = widget.categoryCounts[cat] ?? 0;
-                    final isSel = cat == widget.selectedCategory;
-                    final isAllCategory = idx == 0;
-                    final isAdultCat = _isCategoryAdult(cat);
-
-                    return TVFocusableItem(
-                      focusNode: isAllCategory ? _liveAllCategoryFocusNode : null,
-                      autofocus: !widget.isSideMenuOpen && isAllCategory,
-                      onMoveLeft: _focusSideMenuNow,
-                      onSelect: () => _handleCategorySelect(cat),
-                      builder: (c, f) => AnimatedContainer(
-                        duration: const Duration(milliseconds: 160),
-                        curve: Curves.easeOutCubic,
-                        margin: const EdgeInsets.symmetric(vertical: 3),
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-                        decoration: BoxDecoration(
-                          color: isSel
-                              ? _accentColor.withOpacity(0.16)
-                              : f
-                                  ? Colors.white.withOpacity(0.07)
-                                  : Colors.transparent,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: f
-                                ? _accentColor
-                                : (isSel ? _accentColor.withOpacity(0.45) : Colors.transparent),
-                            width: f ? 2 : 1,
-                          ),
                         ),
-                        child: Row(
-                          children: [
-                            if (isAdultCat && !_adultUnlocked) ...[
-                              const Icon(Icons.lock_outline_rounded, size: 14, color: Colors.redAccent),
-                              const SizedBox(width: 6),
-                            ],
-                            Expanded(
-                              child: Text(
-                                cat,
+                        const SizedBox(width: 6),
+                        buildChannelLogo(channel.logo, size: 38, isLocked: isLocked),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Fonte ligeiramente reduzida (13.5) conforme solicitado
+                              Text(
+                                channel.name,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                  fontSize: 12.5,
-                                  color: isSel ? _accentColor : Colors.white,
-                                  fontWeight: isSel || f ? FontWeight.bold : FontWeight.normal,
+                                  fontSize: 13.5,
+                                  fontWeight: isSelected || isFocused
+                                      ? FontWeight.w800
+                                      : FontWeight.w600,
+                                  color: isSelected
+                                      ? const Color(0xFF00E5FF)
+                                      : Colors.white,
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              '$count',
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: isSel ? _accentColor : Colors.white38,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-
-        // COLUNA 2: LISTA EM 1 COLUNA ÚNICA LARGA (EXIBE O NOME INTEIRO DO CANAL)
-        Expanded(
-          child: Container(
-            color: _panelColor.withOpacity(0.45),
-            child: widget.displayedItems.isEmpty
-                ? const Center(
-                    child: Text(
-                      'Nenhum canal encontrado nesta categoria.',
-                      style: TextStyle(color: Colors.white54),
-                    ),
-                  )
-                : ListView.builder(
-                    controller: _liveChannelsScrollController,
-                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
-                    itemCount: widget.displayedItems.length,
-                    itemBuilder: (context, idx) {
-                      final item = widget.displayedItems[idx];
-                      final isPlaying = widget.activeItem?.id == item.id;
-                      final isFav = widget.favoriteIds.contains(item.id);
-                      final isLocked = item.isAdult && !_adultUnlocked;
-                      final channelNumber = (idx + 1).toString().padLeft(2, '0');
-
-                      return Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: TVFocusableItem(
-                          onSelect: () => _handleChannelSelect(item),
-                          builder: (c, f) => AnimatedScale(
-                            scale: f ? 1.02 : 1.0,
-                            duration: const Duration(milliseconds: 150),
-                            curve: Curves.easeOutCubic,
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 160),
-                              curve: Curves.easeOutCubic,
-                              height: 74,
-                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                              decoration: BoxDecoration(
-                                color: isPlaying ? _accentColor.withOpacity(0.16) : _cardColor,
-                                borderRadius: BorderRadius.circular(13),
-                                border: Border.all(
-                                  color: f
-                                      ? _accentColor
-                                      : isPlaying
-                                          ? _secondaryAccent
-                                          : Colors.white.withOpacity(0.06),
-                                  width: f ? 2.4 : 1.2,
-                                ),
-                                boxShadow: f
-                                    ? [
-                                        BoxShadow(
-                                          color: _accentColor.withOpacity(0.22),
-                                          blurRadius: 12,
-                                        ),
-                                      ]
-                                    : null,
-                              ),
-                              child: Row(
-                                children: [
-                                  Container(
-                                    width: 34,
-                                    alignment: Alignment.center,
-                                    child: Text(
-                                      channelNumber,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w900,
-                                        color: f || isPlaying ? _accentColor : Colors.white38,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 6),
-                                  buildChannelLogo(item.logo, size: 48, isLocked: isLocked),
-                                  const SizedBox(width: 14),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        Text(
-                                          item.name,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            fontSize: 15,
-                                            fontWeight: FontWeight.w900,
-                                            color: isPlaying ? _accentColor : Colors.white,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 5),
-                                        Row(
-                                          children: [
-                                            buildQualityBadge(item.qualityTag),
-                                            const SizedBox(width: 8),
-                                            Expanded(
-                                              child: Text(
-                                                isPlaying
-                                                    ? '▶ Em Pré-visualização • Pressione OK para Tela Cheia'
-                                                    : item.group,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  fontSize: 11.5,
-                                                  color: isPlaying ? _accentColor : Colors.white54,
-                                                  fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  if (isFav)
-                                    const Padding(
-                                      padding: EdgeInsets.only(right: 8),
-                                      child: Icon(Icons.star_rounded, color: Colors.amber, size: 18),
-                                    ),
-                                  Icon(
-                                    isPlaying ? Icons.fullscreen_rounded : Icons.play_circle_outline_rounded,
-                                    color: f || isPlaying ? _accentColor : Colors.white24,
-                                    size: 22,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ),
-
-        // COLUNA 3: DOCK DE PRÉ-VISUALIZAÇÃO
-        Container(
-          width: 320,
-          decoration: BoxDecoration(
-            color: _bgColor,
-            border: Border(left: BorderSide(color: Colors.white.withOpacity(0.06))),
-          ),
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'PRÉ-VISUALIZAÇÃO',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.white.withOpacity(0.55),
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 1.4,
-                    ),
-                  ),
-                  if (widget.activeItem != null)
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: Colors.redAccent.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: const Text(
-                        'AO VIVO',
-                        style: TextStyle(
-                          fontSize: 9,
-                          color: Colors.redAccent,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              AspectRatio(
-                aspectRatio: 16 / 9,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(14),
-                  child: Container(
-                    color: Colors.black,
-                    child: widget.activeItem != null && widget.activeItem!.isAdult && !_adultUnlocked
-                        ? const Center(
-                            child: Icon(Icons.lock_rounded, color: Colors.redAccent, size: 42),
-                          )
-                        : widget.miniVideoWidget,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-              if (widget.activeItem != null) ...[
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    buildChannelLogo(
-                      widget.activeItem!.logo,
-                      size: 42,
-                      isLocked: widget.activeItem!.isAdult && !_adultUnlocked,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.activeItem!.name,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            widget.activeItem!.group,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              fontWeight: FontWeight.bold,
-                              color: _accentColor,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                if (widget.activeEpg != null) ...[
-                  const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: _panelColor,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: Colors.white10),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.activeEpg!.nowTitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 6),
-                        LinearProgressIndicator(
-                          value: widget.activeEpg!.progress,
-                          minHeight: 3,
-                          backgroundColor: Colors.white12,
-                          color: _accentColor,
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          widget.activeEpg!.nextTitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontSize: 10.5, color: Colors.white54),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-                const Spacer(),
-                SizedBox(
-                  width: double.infinity,
-                  child: TVFocusableItem(
-                    autoScroll: false,
-                    onSelect: () => _handleFullScreen(widget.activeItem!),
-                    builder: (c, f) => AnimatedScale(
-                      scale: f ? 1.04 : 1.0,
-                      duration: const Duration(milliseconds: 140),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        decoration: BoxDecoration(
-                          color: f ? Colors.white : _accentColor,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Center(
-                          child: Text(
-                            'EXPANDIR TELA CHEIA',
-                            style: TextStyle(
-                              color: Colors.black,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 12.5,
-                              letterSpacing: 1.1,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: TVFocusableItem(
-                    autoScroll: false,
-                    onSelect: () => SharedStreamEngine.instance.openStream(
-                      widget.activeItem!,
-                      forceReload: true,
-                      tryHlsFallback: true,
-                    ),
-                    builder: (c, f) => Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      decoration: BoxDecoration(
-                        color: f ? Colors.white.withOpacity(0.12) : _panelColor,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: f ? _accentColor : Colors.white12),
-                      ),
-                      child: const Center(
-                        child: Text(
-                          'Alternar Formato (TS / HLS)',
-                          style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: double.infinity,
-                  child: TVFocusableItem(
-                    autoScroll: false,
-                    onSelect: () => widget.onToggleFavorite(widget.activeItem!),
-                    builder: (c, f) => Container(
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                      decoration: BoxDecoration(
-                        color: f ? Colors.white.withOpacity(0.1) : Colors.transparent,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: f ? Colors.white : Colors.white24),
-                      ),
-                      child: Center(
-                        child: Text(
-                          widget.favoriteIds.contains(widget.activeItem!.id)
-                              ? '★ Remover Favorito'
-                              : '☆ Adicionar Favorito',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.bold,
-                            color: f ? Colors.white : Colors.white70,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  // ===========================================================================
-  // MODO 2: FILMES E SÉRIES (FOCO NO BOTÃO PESQUISAR + RETORNO AO 1º ITEM)
-  // ===========================================================================
-  Widget _buildImmersiveVodLayout() {
-    final isSeries = widget.activeSection == MainSection.series;
-    final bgUrl = isSeries ? _focusedSeriesGroup?.logo : _focusedVodItem?.logo;
-    final isFocusedAdultLocked = isSeries
-        ? ((_focusedSeriesGroup?.isAdult ?? false) && !_adultUnlocked)
-        : ((_focusedVodItem?.isAdult ?? false) && !_adultUnlocked);
-
-    final title = isSeries
-        ? (_focusedSeriesGroup?.title ?? widget.sectionTitle)
-        : (_focusedVodItem?.name ?? widget.sectionTitle);
-    final synopsis = isSeries
-        ? (_focusedSeriesGroup?.synopsis ??
-            'Selecione uma série abaixo para ver todas as temporadas e episódios.')
-        : (_focusedVodItem?.synopsis != 'Nenhuma sinopse disponível.' &&
-                _focusedVodItem?.synopsis != null
-            ? _focusedVodItem!.synopsis
-            : 'Pressione OK no pôster para abrir as opções de áudio (Dublado / Legendado), sinopse e iniciar.');
-    final badge = isSeries ? _focusedSeriesGroup?.qualityTag : _focusedVodItem?.qualityTag;
-    final rating = isSeries ? _focusedSeriesGroup?.rating : _focusedVodItem?.rating;
-    final groupName = isSeries ? _focusedSeriesGroup?.group : _focusedVodItem?.group;
-    final hasDualAudio = !isSeries && (_focusedVodItem?.hasBothAudioOptions ?? false);
-    final isSubOnly = !isSeries && (_focusedVodItem?.isSubtitledOnly ?? false);
-
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        if (bgUrl != null && bgUrl.isNotEmpty && !isFocusedAdultLocked)
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            height: MediaQuery.of(context).size.height * 0.72,
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 320),
-              child: SizedBox.expand(
-                key: ValueKey('backdrop_$bgUrl'),
-                child: Image.network(
-                  bgUrl,
-                  fit: BoxFit.cover,
-                  alignment: Alignment.topCenter,
-                  cacheWidth: 640,
-                  errorBuilder: (_, __, ___) => Container(color: _bgColor),
-                ),
-              ),
-            ),
-          ),
-
-        Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-                _bgColor.withOpacity(0.35),
-                _bgColor.withOpacity(0.86),
-                _bgColor,
-              ],
-              stops: const [0.0, 0.45, 0.80],
-            ),
-          ),
-        ),
-
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // BARRA SUPERIOR: BOTÃO PESQUISAR NO CANTO SUPERIOR ESQUERDO (FOCO INICIAL) + CATEGORIAS
-            Padding(
-              padding: const EdgeInsets.fromLTRB(32, 20, 32, 0),
-              child: SizedBox(
-                height: 38,
-                child: Row(
-                  children: [
-                    if (widget.searchController != null) ...[
-                      TVFocusableItem(
-                        focusNode: _vodSearchFocusNode,
-                        autofocus: !widget.isSideMenuOpen,
-                        autoScroll: false,
-                        onMoveLeft: _focusSideMenuNow,
-                        onMoveDown: _focusFirstPosterFromCategory,
-                        onSelect: _openSearchKeyboard,
-                        builder: (c, f) => AnimatedContainer(
-                          duration: const Duration(milliseconds: 150),
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: f ? _accentColor : _panelColor,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: f ? Colors.white : Colors.white24,
-                              width: f ? 2 : 1,
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.search, size: 16, color: f ? Colors.black : _accentColor),
-                              const SizedBox(width: 6),
+                              const SizedBox(height: 2),
                               Text(
-                                widget.searchQuery.isEmpty ? 'Pesquisar' : '"${widget.searchQuery}"',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: f ? Colors.black : Colors.white,
+                                channel.group,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 10.5,
+                                  color: Colors.white54,
                                 ),
                               ),
                             ],
                           ),
                         ),
-                      ),
-                      if (widget.searchQuery.isNotEmpty) ...[
-                        const SizedBox(width: 8),
-                        TVIconButton(
-                          icon: Icons.close_rounded,
-                          size: 16,
-                          color: Colors.redAccent,
-                          onPressed: () => widget.onClearSearch?.call(),
-                        ),
-                      ],
-                      const SizedBox(width: 12),
-                    ],
-                    Expanded(
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        itemCount: widget.sectionCategories.length,
-                        itemBuilder: (context, idx) {
-                          final cat = widget.sectionCategories[idx];
-                          final isSel = cat == widget.selectedCategory;
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: TVFocusableItem(
-                              autoScroll: true,
-                              onMoveLeft: idx == 0 && widget.searchController == null
-                                  ? _focusSideMenuNow
-                                  : null,
-                              onMoveDown: _focusFirstPosterFromCategory,
-                              onSelect: () => _handleCategorySelect(cat, resetVodCarousel: true),
-                              builder: (c, f) => AnimatedContainer(
-                                duration: const Duration(milliseconds: 150),
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: isSel
-                                      ? _accentColor
-                                      : f
-                                          ? Colors.white24
-                                          : _panelColor.withOpacity(0.85),
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(
-                                    color: f ? Colors.white : Colors.white12,
-                                    width: f ? 2 : 1,
-                                  ),
-                                ),
-                                child: Text(
-                                  cat,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                    color: isSel ? Colors.black : Colors.white,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            // HERO BANNER CENTRAL
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(36, 16, 36, 0),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 220),
-                  switchInCurve: Curves.easeOutCubic,
-                  layoutBuilder: (currentChild, previousChildren) {
-                    return Stack(
-                      alignment: Alignment.bottomLeft,
-                      children: [
-                        ...previousChildren,
-                        if (currentChild != null) currentChild,
-                      ],
-                    );
-                  },
-                  child: Column(
-                    key: ValueKey('hero_$title'),
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      Row(
-                        children: [
-                          if (badge != null) buildQualityBadge(badge),
-                          if (hasDualAudio) ...[
-                            const SizedBox(width: 8),
-                            buildAudioOptionBadge('DUBLADO + LEGENDADO (L)', isDual: true),
-                          ] else if (isSubOnly) ...[
-                            const SizedBox(width: 8),
-                            buildAudioOptionBadge('LEGENDADO (L)'),
-                          ],
-                          if (rating != null && rating != 'N/A' && rating.isNotEmpty) ...[
-                            const SizedBox(width: 10),
-                            Text(
-                              '★ $rating',
-                              style: const TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w900,
-                                color: Colors.amber,
-                              ),
-                            ),
-                          ],
-                          if (groupName != null && groupName.isNotEmpty) ...[
-                            const SizedBox(width: 10),
-                            Text(
-                              '• $groupName',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: _accentColor,
-                              ),
-                            ),
-                          ],
+                        if (isFav) ...[
+                          const SizedBox(width: 6),
+                          const Icon(Icons.star_rounded, color: Colors.amber, size: 17),
                         ],
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 36,
-                          fontWeight: FontWeight.w900,
-                          height: 1.1,
-                          letterSpacing: 0.4,
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        width: 680,
-                        child: Text(
-                          synopsis,
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 13.5,
-                            color: Colors.white.withOpacity(0.78),
-                            height: 1.4,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                    ],
+                        const SizedBox(width: 8),
+                        buildQualityBadge(channel.qualityTag),
+                      ],
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
+          ),
+        ),
 
-            // CARROSSEL DE PÔSTERES
-            SizedBox(
-              height: 265,
-              child: isSeries
-                  ? widget.displayedSeries.isEmpty
-                      ? const Center(
-                          child: Text('Nenhuma série encontrada.', style: TextStyle(color: Colors.white54)),
-                        )
-                      : ListView.builder(
-                          controller: _vodScrollController,
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 10),
-                          itemCount: widget.displayedSeries.length,
-                          itemBuilder: (context, idx) {
-                            final s = widget.displayedSeries[idx];
-                            final locked = s.isAdult && !_adultUnlocked;
-                            return TVFocusableItem(
-                              focusNode: idx == 0 ? _firstPosterFocusNode : null,
-                              onMoveLeft: idx == 0 ? _focusSideMenuNow : null,
-                              onSelect: () => _handleSeriesSelect(s),
-                              builder: (c, f) {
-                                if (f) _updateFocusedSeries(s);
-                                return Padding(
-                                  padding: const EdgeInsets.only(right: 18),
-                                  child: AspectRatio(
-                                    aspectRatio: 0.68,
-                                    child: buildStreamingPosterCard(
-                                      title: s.title,
-                                      subtitle: s.group,
-                                      logoUrl: s.logo,
-                                      badgeText: s.qualityTag,
-                                      isFocused: f,
-                                      isAdultLocked: locked,
-                                      onTap: () => _handleSeriesSelect(s),
-                                    ),
-                                  ),
-                                );
-                              },
-                            );
-                          },
-                        )
-                  : widget.displayedItems.isEmpty
-                      ? const Center(
-                          child: Text('Nenhum conteúdo encontrado.', style: TextStyle(color: Colors.white54)),
-                        )
-                      : ListView.builder(
-                          controller: _vodScrollController,
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 10),
-                          itemCount: widget.displayedItems.length,
-                          itemBuilder: (context, idx) {
-                            final item = widget.displayedItems[idx];
-                            final isFav = widget.favoriteIds.contains(item.id);
-                            final prog = widget.vodProgressMap[item.id] ??
-                                widget.vodProgressMap['${item.id}_leg'];
-                            final locked = item.isAdult && !_adultUnlocked;
-                            return TVFocusableItem(
-                              focusNode: idx == 0 ? _firstPosterFocusNode : null,
-                              onMoveLeft: idx == 0 ? _focusSideMenuNow : null,
-                              onSelect: () => _handleVodSelect(item),
-                              builder: (c, f) {
-                                if (f) _updateFocusedVod(item);
-                                return Padding(
-                                  padding: const EdgeInsets.only(right: 18),
-                                  child: AspectRatio(
-                                    aspectRatio: 0.68,
-                                    child: buildStreamingPosterCard(
-                                      title: item.name,
-                                      subtitle: item.group,
-                                      logoUrl: item.logo,
-                                      badgeText: item.qualityTag,
-                                      isFocused: f,
-                                      isFavorite: isFav,
-                                      isAdultLocked: locked,
-                                      hasDualAudio: item.hasBothAudioOptions,
-                                      isSubtitledOnly: item.isSubtitledOnly,
-                                      progress: prog?.progress,
-                                      onTap: () => _handleVodSelect(item),
-                                    ),
-                                  ),
-                                );
-                              },
-                            );
-                          },
-                        ),
-            ),
-            const SizedBox(height: 18),
-          ],
+        const SizedBox(width: 16),
+
+        // Coluna Direita: Painel de Pré-visualização ao Vivo (Com Transição Fluida)
+        Expanded(
+          flex: 54,
+          child: _buildLivePreviewPanel(),
         ),
       ],
     );
   }
 
-  Widget _buildCollapsedRail() {
-    return Column(
-      children: [
-        const SizedBox(height: 22),
-        Icon(Icons.play_circle_fill_rounded, color: _accentColor, size: 28),
-        const SizedBox(height: 20),
-        _buildRailIcon(Icons.live_tv_rounded, MainSection.live),
-        _buildRailIcon(Icons.movie_creation_rounded, MainSection.movie),
-        _buildRailIcon(Icons.video_library_rounded, MainSection.series),
-        _buildRailIcon(Icons.play_circle_outline_rounded, MainSection.continueWatching),
-        _buildRailIcon(Icons.star_rounded, MainSection.favorites),
-        _buildRailIcon(Icons.history_rounded, MainSection.recents),
-      ],
-    );
-  }
+  Widget _buildLivePreviewPanel() {
+    final previewChannel = widget.selectedLiveChannel;
+    if (previewChannel == null) {
+      return Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF0E121B),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white10),
+        ),
+        child: const Center(
+          child: Text(
+            'Selecione um canal na lista ao lado para assistir',
+            style: TextStyle(color: Colors.white54, fontSize: 13),
+          ),
+        ),
+      );
+    }
 
-  Widget _buildRailIcon(IconData icon, MainSection sec) {
-    final sel = widget.activeSection == sec;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: TVFocusableItem(
-        autoScroll: false,
-        onSelect: _focusSideMenuNow,
-        builder: (c, f) {
-          if (f) {
-            WidgetsBinding.instance.addPostFrameCallback((_) => _focusSideMenuNow());
-          }
-          return AnimatedContainer(
-            duration: const Duration(milliseconds: 160),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: sel ? _accentColor.withOpacity(0.2) : Colors.transparent,
-              borderRadius: BorderRadius.circular(10),
+    final isFav = widget.favorites.contains(previewChannel.id);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0E121B),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.08)),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Janela de Vídeo da Pré-visualização
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                color: Colors.black,
+                child: ListenableBuilder(
+                  listenable: _engine,
+                  builder: (context, _) {
+                    // BLINDAGEM DE SUPERFÍCIE: Libera imediatamente o SurfaceView ao abrir a tela cheia
+                    if (_engine.isFullScreenActive) {
+                      return const SizedBox.expand(
+                        child: ColoredBox(color: Colors.black),
+                      );
+                    }
+
+                    final ctrl = _engine.controller;
+                    final isReady = _engine.isReady &&
+                        ctrl != null &&
+                        ctrl.value.isInitialized &&
+                        !_engine.hasError;
+
+                    if (_engine.hasError) {
+                      return Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline_rounded,
+                                color: Colors.redAccent, size: 32),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Sinal indisponível no momento',
+                              style: TextStyle(fontSize: 12.5, color: Colors.white70),
+                            ),
+                            const SizedBox(height: 10),
+                            TVFocusableItem(
+                              autoScroll: false,
+                              onSelect: () => _engine.openStream(
+                                previewChannel,
+                                forceReload: true,
+                                tryHlsFallback: true,
+                              ),
+                              builder: (c, f) => Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 7),
+                                decoration: BoxDecoration(
+                                  color: f ? Colors.white : const Color(0xFF00E5FF),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Text(
+                                  'Reconectar Sinal',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.black,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    if (!isReady) {
+                      return const Center(
+                        child: SizedBox(
+                          width: 32,
+                          height: 32,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.6,
+                            color: Color(0xFF00E5FF),
+                          ),
+                        ),
+                      );
+                    }
+
+                    final ratio =
+                        ctrl.value.aspectRatio > 0 ? ctrl.value.aspectRatio : (16 / 9);
+
+                    return GestureDetector(
+                      onTap: () =>
+                          widget.onOpenFullScreen(previewChannel, widget.filteredItems),
+                      child: Center(
+                        child: AspectRatio(
+                          aspectRatio: ratio,
+                          child: VideoPlayer(
+                            ctrl,
+                            key: ValueKey(
+                              'prev_${previewChannel.id}_${_engine.activeFormatLabel}',
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ),
-            child: Icon(icon, size: 22, color: sel ? _accentColor : Colors.white54),
-          );
-        },
+          ),
+
+          const SizedBox(height: 12),
+
+          // Rodapé da Pré-visualização: Nome do Canal + Botões Tela Cheia e Favorito
+          Row(
+            children: [
+              buildChannelLogo(previewChannel.logo, size: 42),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      previewChannel.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    ListenableBuilder(
+                      listenable: _engine,
+                      builder: (context, _) {
+                        final epg = _engine.currentEpg?.nowTitle ?? previewChannel.group;
+                        return Text(
+                          epg,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11.5, color: Colors.white60),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+
+              // Botão Favoritar no Painel
+              TVFocusableItem(
+                autoScroll: false,
+                onSelect: () => _handleToggleItemFavorite(previewChannel),
+                builder: (c, f) => Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: f
+                        ? Colors.amber
+                        : isFav
+                            ? Colors.amber.withOpacity(0.15)
+                            : Colors.white.withOpacity(0.07),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: f
+                          ? Colors.white
+                          : isFav
+                              ? Colors.amber
+                              : Colors.white24,
+                    ),
+                  ),
+                  child: Icon(
+                    isFav ? Icons.star_rounded : Icons.star_outline_rounded,
+                    size: 18,
+                    color: f ? Colors.black : (isFav ? Colors.amber : Colors.white),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+
+              // Botão Expandir para Tela Cheia
+              TVFocusableItem(
+                focusNode: _previewFullScreenBtnNode,
+                autoScroll: false,
+                onMoveLeft: () {
+                  if (_firstLiveChannelFocusNode.canRequestFocus) {
+                    _firstLiveChannelFocusNode.requestFocus();
+                  }
+                },
+                onSelect: () =>
+                    widget.onOpenFullScreen(previewChannel, widget.filteredItems),
+                builder: (c, f) => Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: f ? Colors.white : const Color(0xFF00E5FF),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.fullscreen_rounded, color: Colors.black, size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        'Tela Cheia',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.black,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildExpandedMenu() {
-    return ListView(
-      padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 12),
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 8, bottom: 18),
-          child: Text(
-            'UNEX VISION',
-            maxLines: 1,
-            overflow: TextOverflow.clip,
-            style: TextStyle(
-              fontWeight: FontWeight.w900,
-              color: _accentColor,
-              fontSize: 16,
-              letterSpacing: 1.5,
+  // ===========================================================================
+  // SEÇÕES 1, 2, 3 e 4: FILMES, SÉRIES, FAVORITOS (3 SUBCATEGORIAS) E HISTÓRICO
+  // ===========================================================================
+  Widget _buildCatalogAndFavoritesSection() {
+    String sectionTitle = 'Filmes';
+    IconData sectionIcon = Icons.movie_creation_rounded;
+
+    if (widget.activeSection == 2) {
+      sectionTitle = 'Séries';
+      sectionIcon = Icons.video_library_rounded;
+    } else if (widget.activeSection == 3) {
+      sectionTitle = 'Meus Favoritos';
+      sectionIcon = Icons.star_rounded;
+    } else if (widget.activeSection == 4) {
+      sectionTitle = 'Histórico Recente';
+      sectionIcon = Icons.history_rounded;
+    }
+
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Cabeçalho Superior: Título + Dica de Favoritar + Botão de Pesquisa
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 10),
+            child: Row(
+              children: [
+                Icon(sectionIcon, color: const Color(0xFF00E5FF), size: 24),
+                const SizedBox(width: 10),
+                Text(
+                  sectionTitle,
+                  style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.12),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.amber.withOpacity(0.4)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.star_rounded, color: Colors.amber, size: 14),
+                      SizedBox(width: 5),
+                      Text(
+                        'Segure OK para Favoritar',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.amber,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(),
+                _buildSearchButton(
+                  focusNode: _vodSearchFocusNode,
+                  title: 'Pesquisar em $sectionTitle',
+                  onMoveDown: () {
+                    if (widget.categories.isNotEmpty &&
+                        _firstVodCatFocusNode.canRequestFocus) {
+                      _firstVodCatFocusNode.requestFocus();
+                    } else if (_firstCatalogItemFocusNode.canRequestFocus) {
+                      _firstCatalogItemFocusNode.requestFocus();
+                    }
+                  },
+                ),
+              ],
             ),
           ),
-        ),
-        _buildNav('TV ao Vivo', MainSection.live, Icons.live_tv_rounded),
-        _buildNav('Filmes', MainSection.movie, Icons.movie_creation_rounded),
-        _buildNav('Séries', MainSection.series, Icons.video_library_rounded),
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 8),
-          child: Divider(color: Colors.white10),
-        ),
-        _buildNav('Continuar Assistindo', MainSection.continueWatching, Icons.play_circle_filled_rounded),
-        _buildNav('Meus Favoritos', MainSection.favorites, Icons.star_rounded),
-        _buildNav('Recentes', MainSection.recents, Icons.history_rounded),
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 8),
-          child: Divider(color: Colors.white10),
-        ),
-        TVFocusableItem(
-          onMoveRight: widget.onCloseSideMenu,
-          onSelect: () {
-            widget.onCloseSideMenu();
-            showChangeParentalPinDialog(context, deviceMode: DeviceMode.tv);
-          },
-          builder: (c, f) => AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            margin: const EdgeInsets.symmetric(vertical: 3),
-            decoration: BoxDecoration(
-              color: f ? Colors.white.withOpacity(0.08) : Colors.transparent,
-              borderRadius: BorderRadius.circular(10),
+
+          // Barra de Categorias (Em Favoritos exibe as 3 subcategorias: Canais, Filmes e Séries)
+          if (widget.categories.isNotEmpty)
+            SizedBox(
+              height: 44,
+              child: ListView.builder(
+                controller: _vodCategoryScrollController,
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                itemCount: widget.categories.length,
+                itemBuilder: (context, idx) {
+                  final cat = widget.categories[idx];
+                  final isSelected = cat == widget.selectedCategory;
+
+                  return TVFocusableItem(
+                    focusNode: idx == 0 ? _firstVodCatFocusNode : null,
+                    onMoveLeft: idx == 0 ? _focusActiveSidebarItem : null,
+                    onMoveUp: () {
+                      if (_vodSearchFocusNode.canRequestFocus) {
+                        _vodSearchFocusNode.requestFocus();
+                      }
+                    },
+                    onMoveDown: () => _focusFirstItemOfSelectedCategory(),
+                    onSelect: () {
+                      // REGRA SOLICITADA: Ao selecionar qualquer categoria em Filmes/Séries/Favoritos,
+                      // o foco do cursor vai automaticamente para o 1º item daquela categoria.
+                      _pendingFocusFirstCatalogItem = true;
+                      if (widget.selectedCategory == cat) {
+                        _pendingFocusFirstCatalogItem = false;
+                        if (_catalogCarouselScrollController.hasClients) {
+                          _catalogCarouselScrollController.jumpTo(0);
+                        }
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          _focusFirstItemOfSelectedCategory();
+                        });
+                      } else {
+                        widget.onCategorySelected(cat);
+                      }
+                    },
+                    builder: (context, isFocused) => _buildCategoryPill(
+                      label: widget.activeSection == 3 ? _formatFavoriteSubcategoryLabel(cat) : cat,
+                      isSelected: isSelected,
+                      isFocused: isFocused,
+                      icon: widget.activeSection == 3 ? _getFavoriteSubcategoryIcon(cat) : null,
+                    ),
+                  );
+                },
+              ),
             ),
-            child: const Row(
+
+          const SizedBox(height: 12),
+
+          // Conteúdo Principal:
+          // - Se estiver em Favoritos -> Subcategoria Canais: mostra a lista única de canais favoritos + prévia
+          // - Se estiver em Filmes, Séries ou Favoritos (Filmes/Séries): mostra o carrossel de pôsteres
+          Expanded(
+            child: _isFavoritesLiveSubcategory
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                    child: _buildLiveChannelsAndPreviewBody(),
+                  )
+                : _buildPosterCatalogBody(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatFavoriteSubcategoryLabel(String cat) {
+    if (cat == 'Canais' || cat == 'TV ao Vivo') return 'TV ao Vivo (Canais)';
+    if (cat == 'Filmes') return 'Filmes Favoritos';
+    if (cat == 'Séries') return 'Séries Favoritas';
+    return cat;
+  }
+
+  IconData? _getFavoriteSubcategoryIcon(String cat) {
+    if (cat == 'Canais' || cat == 'TV ao Vivo') return Icons.live_tv_rounded;
+    if (cat == 'Filmes') return Icons.movie_creation_rounded;
+    if (cat == 'Séries') return Icons.video_library_rounded;
+    return null;
+  }
+
+  Widget _buildPosterCatalogBody() {
+    final isSeriesMode = _isDisplayingSeries;
+    final itemCount =
+        isSeriesMode ? widget.groupedSeries.length : widget.filteredItems.length;
+
+    if (itemCount == 0) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              widget.activeSection == 3
+                  ? Icons.star_border_rounded
+                  : Icons.movie_filter_outlined,
+              size: 54,
+              color: Colors.white24,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              widget.activeSection == 3
+                  ? 'Nenhum item nesta subcategoria de Favoritos.\nSegure o botão OK sobre um filme ou série para adicioná-lo aqui!'
+                  : 'Nenhum conteúdo encontrado para esta seleção.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white54, fontSize: 13.5, height: 1.4),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableHeight = constraints.maxHeight;
+        final cardHeight = (availableHeight * 0.86).clamp(210.0, 320.0);
+        final cardWidth = cardHeight * 0.67;
+
+        return Center(
+          child: SizedBox(
+            height: cardHeight,
+            child: ListView.builder(
+              controller: _catalogCarouselScrollController,
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              itemCount: itemCount,
+              itemBuilder: (context, idx) {
+                if (isSeriesMode) {
+                  final series = widget.groupedSeries[idx];
+                  final isFav = _isSeriesFavorited(series);
+                  final totalEps = series.seasons.values
+                      .fold<int>(0, (sum, list) => sum + list.length);
+
+                  return Container(
+                    width: cardWidth,
+                    margin: const EdgeInsets.only(right: 16),
+                    child: TVFocusableItem(
+                      focusNode: idx == 0 ? _firstCatalogItemFocusNode : null,
+                      onMoveLeft: idx == 0 ? _focusActiveSidebarItem : null,
+                      onMoveUp: () {
+                        if (widget.categories.isNotEmpty &&
+                            _firstVodCatFocusNode.canRequestFocus) {
+                          _firstVodCatFocusNode.requestFocus();
+                        } else if (_vodSearchFocusNode.canRequestFocus) {
+                          _vodSearchFocusNode.requestFocus();
+                        }
+                      },
+                      onSelect: () => widget.onOpenSeriesDetails(series),
+                      onLongSelect: () => _handleToggleSeriesFavorite(series),
+                      builder: (context, isFocused) => buildStreamingPosterCard(
+                        title: series.title,
+                        subtitle:
+                            '${series.seasons.length} Temp • $totalEps Episódios',
+                        logoUrl: series.logo,
+                        badgeText: 'SÉRIE',
+                        isFocused: isFocused,
+                        isFavorite: isFav,
+                        onTap: () => widget.onOpenSeriesDetails(series),
+                        onLongPress: () => _handleToggleSeriesFavorite(series),
+                      ),
+                    ),
+                  );
+                } else {
+                  final item = widget.filteredItems[idx];
+                  final isFav = widget.favorites.contains(item.id);
+                  final isLocked = item.isAdult && !widget.isAdultUnlocked;
+                  final prog = widget.watchProgress[item.id];
+
+                  return Container(
+                    width: cardWidth,
+                    margin: const EdgeInsets.only(right: 16),
+                    child: TVFocusableItem(
+                      focusNode: idx == 0 ? _firstCatalogItemFocusNode : null,
+                      onMoveLeft: idx == 0 ? _focusActiveSidebarItem : null,
+                      onMoveUp: () {
+                        if (widget.categories.isNotEmpty &&
+                            _firstVodCatFocusNode.canRequestFocus) {
+                          _firstVodCatFocusNode.requestFocus();
+                        } else if (_vodSearchFocusNode.canRequestFocus) {
+                          _vodSearchFocusNode.requestFocus();
+                        }
+                      },
+                      onSelect: () async {
+                        if (isLocked) {
+                          final ok = await widget.onUnlockAdult();
+                          if (!ok) return;
+                        }
+                        widget.onOpenMovieDetails(item);
+                      },
+                      onLongSelect: () => _handleToggleItemFavorite(item),
+                      builder: (context, isFocused) => buildStreamingPosterCard(
+                        title: item.name,
+                        subtitle: item.group,
+                        logoUrl: item.logo,
+                        badgeText: item.qualityTag,
+                        isFocused: isFocused,
+                        isFavorite: isFav,
+                        isAdultLocked: isLocked,
+                        hasDualAudio: item.audioOptions.length > 1,
+                        isSubtitledOnly: item.isSubtitled,
+                        progress: prog,
+                        onTap: () => widget.onOpenMovieDetails(item),
+                        onLongPress: () => _handleToggleItemFavorite(item),
+                      ),
+                    ),
+                  );
+                }
+              },
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // ===========================================================================
+  // COMPONENTES AUXILIARES DE TOPO (BUSCA E PÍLULAS DE CATEGORIA)
+  // ===========================================================================
+  Widget _buildSearchButton({
+    required FocusNode focusNode,
+    required String title,
+    required VoidCallback onMoveDown,
+  }) {
+    final hasQuery = widget.searchQuery.trim().isNotEmpty;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TVFocusableItem(
+          focusNode: focusNode,
+          autoScroll: false,
+          onMoveLeft: _focusActiveSidebarItem,
+          onMoveDown: onMoveDown,
+          onSelect: () => showTVVirtualKeyboard(
+            context,
+            widget.searchController,
+            title,
+            onChanged: widget.onSearchChanged,
+          ),
+          builder: (context, isFocused) => AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: isFocused
+                  ? const Color(0xFF00E5FF)
+                  : const Color(0xFF131824),
+              borderRadius: BorderRadius.circular(22),
+              border: Border.all(
+                color: isFocused
+                    ? Colors.white
+                    : hasQuery
+                        ? const Color(0xFF00E5FF)
+                        : Colors.white24,
+                width: isFocused ? 1.8 : 1.0,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.lock_person_rounded, size: 20, color: Colors.white70),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Senha Parental',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12.5, color: Colors.white),
+                Icon(
+                  Icons.search_rounded,
+                  size: 17,
+                  color: isFocused ? Colors.black : const Color(0xFF00E5FF),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  hasQuery ? 'Busca: "${widget.searchQuery}"' : 'Pesquisar',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w800,
+                    color: isFocused ? Colors.black : Colors.white,
                   ),
                 ),
               ],
             ),
           ),
         ),
-        if (widget.onRefreshPlaylist != null)
-          TVFocusableItem(
-            onMoveRight: widget.onCloseSideMenu,
-            onSelect: () {
-              widget.onCloseSideMenu();
-              widget.onRefreshPlaylist!();
+        if (hasQuery) ...[
+          const SizedBox(width: 8),
+          TVIconButton(
+            icon: Icons.clear_rounded,
+            size: 16,
+            onPressed: () {
+              widget.searchController.clear();
+              widget.onSearchChanged('');
             },
-            builder: (c, f) => AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              margin: const EdgeInsets.symmetric(vertical: 3),
-              decoration: BoxDecoration(
-                color: f ? Colors.white.withOpacity(0.08) : Colors.transparent,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.refresh_rounded, size: 20, color: Colors.white70),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Atualizar Lista',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12.5, color: Colors.white),
-                    ),
-                  ),
-                ],
-              ),
-            ),
           ),
-        if (widget.onLogout != null)
-          TVFocusableItem(
-            onMoveRight: widget.onCloseSideMenu,
-            onSelect: widget.onLogout!,
-            builder: (c, f) => AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-              margin: const EdgeInsets.symmetric(vertical: 3),
-              decoration: BoxDecoration(
-                color: f ? Colors.redAccent.withOpacity(0.2) : Colors.transparent,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Row(
-                children: [
-                  Icon(Icons.logout_rounded, size: 20, color: Colors.redAccent),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Trocar Conta',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        color: Colors.redAccent,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+        ],
       ],
     );
   }
 
-  Widget _buildNav(String label, MainSection section, IconData icon) {
-    final sel = widget.activeSection == section;
-    return TVFocusableItem(
-      focusNode: sel ? _sideMenuFocus : null,
-      autofocus: sel && widget.isSideMenuOpen,
-      onMoveRight: () {
-        widget.onCloseSideMenu();
-        _focusDefaultElementForCurrentSection();
-      },
-      onSelect: () => widget.onSelectSection(section),
-      builder: (c, f) => AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        margin: const EdgeInsets.symmetric(vertical: 3),
-        decoration: BoxDecoration(
-          color: sel ? _accentColor : (f ? Colors.white.withOpacity(0.1) : Colors.transparent),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: f ? Colors.white : Colors.transparent,
-            width: f ? 1.5 : 1,
-          ),
+  Widget _buildCategoryPill({
+    required String label,
+    required bool isSelected,
+    required bool isFocused,
+    IconData? icon,
+  }) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 140),
+      margin: const EdgeInsets.only(right: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: isFocused
+            ? const Color(0xFF00E5FF)
+            : isSelected
+                ? const Color(0xFF00E5FF).withOpacity(0.16)
+                : const Color(0xFF111622),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: isFocused
+              ? Colors.white
+              : isSelected
+                  ? const Color(0xFF00E5FF)
+                  : Colors.white12,
+          width: isFocused ? 1.8 : 1.0,
         ),
-        child: Row(
-          children: [
-            Icon(icon, size: 20, color: sel ? Colors.black : Colors.white70),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  color: sel ? Colors.black : Colors.white,
-                  fontWeight: sel ? FontWeight.w900 : FontWeight.bold,
-                ),
-              ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(
+              icon,
+              size: 15,
+              color: isFocused
+                  ? Colors.black
+                  : isSelected
+                      ? const Color(0xFF00E5FF)
+                      : Colors.white70,
             ),
+            const SizedBox(width: 6),
           ],
-        ),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: isFocused || isSelected ? FontWeight.w900 : FontWeight.w600,
+              color: isFocused
+                  ? Colors.black
+                  : isSelected
+                      ? const Color(0xFF00E5FF)
+                      : Colors.white70,
+            ),
+          ),
+        ],
       ),
     );
   }
