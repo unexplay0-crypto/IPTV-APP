@@ -69,22 +69,27 @@ class StreamItem {
   final String? subtitledStreamId;
   final String? subtitledName;
   final bool isSubtitledOnly;
+  // Compatibilidade com o parser e a interface de áudio do catálogo.
+  final bool isSubtitled;
+  final Map<String, String> audioOptions;
 
   StreamItem({
     required this.id,
-    required this.streamId,
-    required this.tvgId,
+    this.streamId = '',
+    this.tvgId = '',
     required this.name,
-    required this.cleanName,
-    required this.seriesName,
-    required this.seasonNumber,
-    required this.episodeNumber,
-    required this.qualityTag,
-    required this.group,
-    required this.logo,
+    this.cleanName = '',
+    this.seriesName = '',
+    this.seasonNumber = 0,
+    this.episodeNumber = 0,
+    this.qualityTag = '',
+    this.group = 'Geral',
+    this.logo = '',
     required this.url,
-    required this.type,
-    required this.isAdult,
+    this.type = ContentType.movie,
+    this.isAdult = false,
+    this.isSubtitled = false,
+    this.audioOptions = const {},
     this.synopsis = 'Nenhuma sinopse disponível.',
     this.rating = 'N/A',
     this.year = '',

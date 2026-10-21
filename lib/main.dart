@@ -462,6 +462,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
 
     return grouped.entries.map((entry) {
       return SeriesGroup(
+        id: entry.key,
         title: entry.key,
         logo: logos[entry.key] ?? '',
         group: groups[entry.key] ?? 'Séries',
