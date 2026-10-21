@@ -237,42 +237,11 @@ class _UnexRootControllerState extends State<UnexRootController> {
     }
 
     if (savedM3u.isNotEmpty) {
-      // 1) Tenta carregar do cache offline primeiro (inicio instantaneo)
-      bool cacheHit = false;
-      try {
-        final cached = await LocalAppStorage.loadOfflinePlaylist();
-        if (cached.isNotEmpty) {
-          final cachedGroups = _buildSeriesGroups(cached);
-          final firstLiveCached = cached.cast<StreamItem?>().firstWhere(
-                (i) => i != null && i.type == ContentType.live && !i.isAdult,
-                orElse: () => null,
-              );
-          if (mounted) {
-            setState(() {
-              _allItems = cached;
-              _allSeriesGroups = cachedGroups;
-              _selectedLiveChannel = firstLiveCached;
-              _isLoggedIn = true;
-              _isCheckingBoot = false;
-            });
-          }
-          if (firstLiveCached != null) {
-            SharedStreamEngine.instance.openStream(firstLiveCached);
-          }
-          cacheHit = true;
-        }
-      } catch (_) {}
-
-      // 2) Atualiza em segundo plano (silencioso) com a versao online
-      unawaited(_loadPlaylistFromUrl(
+      setState(() => _isCheckingBoot = false);
+      await _loadPlaylistFromUrl(
         savedM3u,
         fromActivationCode: activatedByCode,
-        silent: cacheHit,
-      ));
-
-      if (!cacheHit) {
-        setState(() => _isCheckingBoot = false);
-      }
+      );
     } else {
       setState(() => _isCheckingBoot = false);
     }
@@ -337,9 +306,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
         }
 
         final seriesGroups = _buildSeriesGroups(parsedItems);
-
-        // Salva lista em cache offline para inicializacao rapida nas proximas vezes
-        await LocalAppStorage.saveOfflinePlaylist(parsedItems);
 
         await LocalAppStorage.setString(_kPrefM3uUrl, cleanUrl);
         await LocalAppStorage.setBool(_kPrefActivatedByCode, fromActivationCode);
