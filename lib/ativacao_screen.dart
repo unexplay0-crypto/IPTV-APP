@@ -43,10 +43,14 @@ class _ActivationCharFormatter extends TextInputFormatter {
 
 class AtivacaoScreen extends StatefulWidget {
   final Future<void> Function(String m3uUrl)? onM3uActivated;
+  final VoidCallback? onUseTraditionalLogin;
+  final bool embedded;
 
   const AtivacaoScreen({
     super.key,
     this.onM3uActivated,
+    this.onUseTraditionalLogin,
+    this.embedded = false,
   });
 
   @override
@@ -217,7 +221,7 @@ class _AtivacaoScreenState extends State<AtivacaoScreen> {
             if (mounted && Navigator.canPop(context)) {
               Navigator.pop(context, m3uUrl);
             }
-          } else {
+          } else if (Navigator.canPop(context)) {
             Navigator.pop(context, m3uUrl);
           }
           return;
@@ -488,28 +492,51 @@ class _AtivacaoScreenState extends State<AtivacaoScreen> {
 
                     const SizedBox(height: 10),
 
-                    // BOTÃO VOLTAR
-                    SizedBox(
-                      width: double.infinity,
-                      height: 46,
-                      child: OutlinedButton(
-                        onPressed: _isLoading ? null : () => Navigator.pop(context),
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Colors.white24),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                        ),
+                    if (widget.onUseTraditionalLogin != null)
+                      TextButton(
+                        onPressed: _isLoading ? null : widget.onUseTraditionalLogin,
                         child: const Text(
-                          'VOLTAR',
+                          'Entrar com Link M3U ou Credenciais',
                           style: TextStyle(
-                            color: Colors.white70,
-                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF00E5FF),
+                            fontWeight: FontWeight.w600,
                             fontSize: 13,
+                            decoration: TextDecoration.underline,
                           ),
                         ),
                       ),
-                    ),
+
+                    if (!widget.embedded) ...[
+                      const SizedBox(height: 10),
+                      // BOTÃO VOLTAR
+                      SizedBox(
+                        width: double.infinity,
+                        height: 46,
+                        child: OutlinedButton(
+                          onPressed: _isLoading
+                              ? null
+                              : () {
+                                  if (Navigator.canPop(context)) {
+                                    Navigator.pop(context);
+                                  }
+                                },
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Colors.white24),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: const Text(
+                            'VOLTAR',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

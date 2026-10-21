@@ -163,6 +163,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
   String? _loginError;
 
   bool _useDirectM3uLink = false;
+  bool _forceTraditionalLogin = false;
   final TextEditingController _dnsController = TextEditingController();
   final TextEditingController _userController = TextEditingController();
   final TextEditingController _passController = TextEditingController();
@@ -1008,6 +1009,17 @@ class _UnexRootControllerState extends State<UnexRootController> {
     }
 
     if (!_isLoggedIn) {
+      if (!_forceTraditionalLogin) {
+        return AtivacaoScreen(
+          embedded: true,
+          onUseTraditionalLogin: () {
+            if (mounted) setState(() => _forceTraditionalLogin = true);
+          },
+          onM3uActivated: (m3uUrl) async {
+            await _loadPlaylistFromUrl(m3uUrl, fromActivationCode: true);
+          },
+        );
+      }
       return _buildLoginScreen();
     }
 

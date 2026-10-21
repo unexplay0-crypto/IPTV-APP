@@ -712,17 +712,9 @@ class SharedStreamEngine extends ChangeNotifier {
       if (!preferAlternate) {
         list.add(_StreamAttempt(
           url: m3u8Url,
-          formatHint: null,
+          formatHint: VideoFormat.hls,
           headers: kIptvHeaders,
           label: 'TV-SURFACE (HLS)',
-          viewType: VideoViewType.platformView,
-        ));
-        list.add(_StreamAttempt(
-          url: tsUrl,
-          formatHint: null,
-          headers: kVlcHeaders,
-          label: 'TV-SURFACE (TS)',
-          resolveRedirectFirst: true,
           viewType: VideoViewType.platformView,
         ));
         list.add(_StreamAttempt(
@@ -732,6 +724,14 @@ class SharedStreamEngine extends ChangeNotifier {
           label: 'TEXTURE (HLS)',
           resolveRedirectFirst: true,
           viewType: VideoViewType.textureView,
+        ));
+        list.add(_StreamAttempt(
+          url: tsUrl,
+          formatHint: null,
+          headers: kVlcHeaders,
+          label: 'TV-SURFACE (TS)',
+          resolveRedirectFirst: true,
+          viewType: VideoViewType.platformView,
         ));
         list.add(_StreamAttempt(
           url: tsUrl,
@@ -890,7 +890,7 @@ class SharedStreamEngine extends ChangeNotifier {
       );
 
       try {
-        await testCtrl.initialize().timeout(const Duration(seconds: 12));
+        await testCtrl.initialize().timeout(Duration(seconds: item.type == ContentType.live ? 6 : 12));
         if (myOp != _opId) {
           await testCtrl.dispose().catchError((_) {});
           return;
