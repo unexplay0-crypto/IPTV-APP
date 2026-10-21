@@ -1,38 +1,38 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'core.dart';
 
 // ===========================================================================
-// COMPONENTE DE FOCO UNIVERSAL PARA CONTROLE REMOTO (CLIQUE CURTO + SEGURAR OK)
+// COMPONENTE DE FOCO PARA CONTROLE REMOTO DE TV E TOQUE
+// (Suporta clique curto onSelect e segurar botão OK onLongSelect)
 // ===========================================================================
 class TVFocusableItem extends StatefulWidget {
   final Widget Function(BuildContext context, bool isFocused) builder;
   final VoidCallback? onSelect;
   final VoidCallback? onLongSelect;
-  final VoidCallback? onFocus;
   final VoidCallback? onMoveLeft;
   final VoidCallback? onMoveRight;
   final VoidCallback? onMoveUp;
   final VoidCallback? onMoveDown;
   final bool autofocus;
-  final FocusNode? focusNode;
   final bool autoScroll;
+  final FocusNode? focusNode;
 
   const TVFocusableItem({
     super.key,
     required this.builder,
     this.onSelect,
     this.onLongSelect,
-    this.onFocus,
     this.onMoveLeft,
     this.onMoveRight,
     this.onMoveUp,
     this.onMoveDown,
     this.autofocus = false,
-    this.focusNode,
     this.autoScroll = true,
+    this.focusNode,
   });
 
   @override
@@ -46,7 +46,7 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
 
   Timer? _longPressTimer;
   bool _isSelectKeyDown = false;
-  bool _longSelectTriggered = false;
+  bool _longPressTriggered = false;
 
   @override
   void initState() {
@@ -63,7 +63,7 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
   @override
   void didUpdateWidget(covariant TVFocusableItem oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.focusNode != oldWidget.focusNode) {
+    if (oldWidget.focusNode != widget.focusNode) {
       _node.removeListener(_onFocusChange);
       if (_ownsNode) {
         _node.dispose();
@@ -93,33 +93,25 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
     if (!mounted) return;
     final hasFocus = _node.hasFocus;
     if (!hasFocus) {
-      _cancelHoldTimer();
+      _longPressTimer?.cancel();
+      _isSelectKeyDown = false;
+      _longPressTriggered = false;
     }
     if (_isFocused != hasFocus) {
       setState(() => _isFocused = hasFocus);
     }
-    if (hasFocus) {
-      widget.onFocus?.call();
-      if (widget.autoScroll) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && context.mounted) {
-            Scrollable.ensureVisible(
-              context,
-              alignment: 0.35,
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutCubic,
-            );
-          }
-        });
-      }
+    if (hasFocus && widget.autoScroll) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && context.mounted) {
+          Scrollable.ensureVisible(
+            context,
+            alignment: 0.35,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+          );
+        }
+      });
     }
-  }
-
-  void _cancelHoldTimer() {
-    _longPressTimer?.cancel();
-    _longPressTimer = null;
-    _isSelectKeyDown = false;
-    _longSelectTriggered = false;
   }
 
   bool _isConfirmKey(LogicalKeyboardKey key) {
@@ -133,8 +125,9 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
   KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
     final key = event.logicalKey;
 
-    // Tratamento do botão OK (Clique rápido vs Segurar o botão OK para Favoritar)
+    // 1. Tratamento do botão OK / Confirmar (Clique curto vs Segurar botão OK)
     if (_isConfirmKey(key)) {
+      // Se não houver ação de segurar (onLongSelect), responde imediatamente no KeyDown
       if (widget.onLongSelect == null) {
         if (event is KeyDownEvent) {
           widget.onSelect?.call();
@@ -143,14 +136,15 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
         return KeyEventResult.ignored;
       }
 
+      // Se houver onLongSelect configurado (Canais, Filmes e Séries):
       if (event is KeyDownEvent) {
         if (!_isSelectKeyDown) {
           _isSelectKeyDown = true;
-          _longSelectTriggered = false;
+          _longPressTriggered = false;
           _longPressTimer?.cancel();
-          _longPressTimer = Timer(const Duration(milliseconds: 520), () {
-            if (mounted && _isSelectKeyDown && !_longSelectTriggered) {
-              _longSelectTriggered = true;
+          _longPressTimer = Timer(const Duration(milliseconds: 550), () {
+            if (mounted && _isSelectKeyDown && !_longPressTriggered) {
+              _longPressTriggered = true;
               HapticFeedback.mediumImpact();
               widget.onLongSelect?.call();
             }
@@ -161,33 +155,35 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
         return KeyEventResult.handled;
       } else if (event is KeyUpEvent) {
         _longPressTimer?.cancel();
-        final wasLong = _longSelectTriggered;
+        final wasLong = _longPressTriggered;
+        final wasDown = _isSelectKeyDown;
         _isSelectKeyDown = false;
-        _longSelectTriggered = false;
-        if (!wasLong) {
+        _longPressTriggered = false;
+        if (wasDown && !wasLong) {
           widget.onSelect?.call();
         }
         return KeyEventResult.handled;
       }
     }
 
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-
-    if (key == LogicalKeyboardKey.arrowLeft && widget.onMoveLeft != null) {
-      widget.onMoveLeft!();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowRight && widget.onMoveRight != null) {
-      widget.onMoveRight!();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowUp && widget.onMoveUp != null) {
-      widget.onMoveUp!();
-      return KeyEventResult.handled;
-    }
-    if (key == LogicalKeyboardKey.arrowDown && widget.onMoveDown != null) {
-      widget.onMoveDown!();
-      return KeyEventResult.handled;
+    // 2. Tratamento das setas direcionais do controle remoto
+    if (event is KeyDownEvent) {
+      if (key == LogicalKeyboardKey.arrowLeft && widget.onMoveLeft != null) {
+        widget.onMoveLeft!();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowRight && widget.onMoveRight != null) {
+        widget.onMoveRight!();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp && widget.onMoveUp != null) {
+        widget.onMoveUp!();
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowDown && widget.onMoveDown != null) {
+        widget.onMoveDown!();
+        return KeyEventResult.handled;
+      }
     }
 
     return KeyEventResult.ignored;
@@ -201,18 +197,8 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
       onKeyEvent: _handleKeyEvent,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: () {
-          if (!_node.hasFocus && _node.canRequestFocus) {
-            _node.requestFocus();
-          }
-          widget.onSelect?.call();
-        },
-        onLongPress: widget.onLongSelect != null
-            ? () {
-                HapticFeedback.mediumImpact();
-                widget.onLongSelect?.call();
-              }
-            : null,
+        onTap: widget.onSelect,
+        onLongPress: widget.onLongSelect,
         child: widget.builder(context, _isFocused),
       ),
     );
@@ -220,14 +206,14 @@ class _TVFocusableItemState extends State<TVFocusableItem> {
 }
 
 // ===========================================================================
-// BOTÃO DE ÍCONE COM FOCO PARA TV E MOBILE
+// BOTÃO DE ÍCONE FOCÁVEL PARA TV E MOBILE
 // ===========================================================================
 class TVIconButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onPressed;
   final Color color;
   final double size;
-  final String? tooltip;
+  final bool autofocus;
 
   const TVIconButton({
     super.key,
@@ -235,23 +221,24 @@ class TVIconButton extends StatelessWidget {
     required this.onPressed,
     this.color = Colors.white,
     this.size = 20,
-    this.tooltip,
+    this.autofocus = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return TVFocusableItem(
+      autofocus: autofocus,
       autoScroll: false,
       onSelect: onPressed,
       builder: (context, isFocused) => AnimatedContainer(
         duration: const Duration(milliseconds: 140),
-        padding: const EdgeInsets.all(7),
+        padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
           color: isFocused ? const Color(0xFF00E5FF) : Colors.white.withOpacity(0.08),
           shape: BoxShape.circle,
           border: Border.all(
-            color: isFocused ? Colors.white : Colors.white12,
-            width: isFocused ? 1.8 : 1,
+            color: isFocused ? Colors.white : Colors.white24,
+            width: isFocused ? 1.8 : 1.0,
           ),
         ),
         child: Icon(
@@ -265,28 +252,28 @@ class TVIconButton extends StatelessWidget {
 }
 
 // ===========================================================================
-// BADGES E COMPONENTES VISUAIS DE CATÁLOGO
+// BADGES DE QUALIDADE, ÁUDIO E LOGOS DE CANAIS
 // ===========================================================================
-Widget buildQualityBadge(String qualityTag) {
-  final tag = qualityTag.trim().toUpperCase();
+Widget buildQualityBadge(String text) {
+  final clean = text.trim().isEmpty ? 'HD' : text.trim().toUpperCase();
   Color badgeColor = const Color(0xFF00E5FF);
-  if (tag.contains('4K') || tag.contains('UHD')) {
-    badgeColor = const Color(0xFFFFD740);
-  } else if (tag.contains('FHD') || tag.contains('1080')) {
+  if (clean.contains('4K') || clean.contains('UHD')) {
+    badgeColor = const Color(0xFFFFD54F);
+  } else if (clean.contains('FHD') || clean.contains('1080')) {
     badgeColor = const Color(0xFF00E5FF);
-  } else if (tag.contains('SD')) {
-    badgeColor = Colors.white54;
+  } else if (clean.contains('SD')) {
+    badgeColor = Colors.white70;
   }
 
   return Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2.5),
     decoration: BoxDecoration(
       color: badgeColor.withOpacity(0.16),
       borderRadius: BorderRadius.circular(5),
-      border: Border.all(color: badgeColor.withOpacity(0.6), width: 0.9),
+      border: Border.all(color: badgeColor.withOpacity(0.6), width: 1),
     ),
     child: Text(
-      tag.isEmpty ? 'HD' : tag,
+      clean,
       style: TextStyle(
         fontSize: 9.5,
         fontWeight: FontWeight.w900,
@@ -297,28 +284,28 @@ Widget buildQualityBadge(String qualityTag) {
   );
 }
 
-Widget buildAudioOptionBadge(String label, {bool isDual = false}) {
-  final badgeColor = isDual ? const Color(0xFF00E676) : const Color(0xFFFFAB40);
+Widget buildAudioOptionBadge(String text, {bool isDual = false}) {
+  final color = isDual ? const Color(0xFF00E676) : const Color(0xFFFFAB40);
   return Container(
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2.5),
     decoration: BoxDecoration(
-      color: badgeColor.withOpacity(0.18),
+      color: color.withOpacity(0.16),
       borderRadius: BorderRadius.circular(5),
-      border: Border.all(color: badgeColor.withOpacity(0.65), width: 1),
+      border: Border.all(color: color.withOpacity(0.65), width: 1),
     ),
     child: Text(
-      label,
+      text,
       style: TextStyle(
         fontSize: 9.5,
         fontWeight: FontWeight.w900,
-        color: badgeColor,
+        color: color,
         letterSpacing: 0.4,
       ),
     ),
   );
 }
 
-Widget buildChannelLogo(String? logoUrl, {double size = 44, bool isLocked = false}) {
+Widget buildChannelLogo(String url, {double size = 44, bool isLocked = false}) {
   if (isLocked) {
     return Container(
       width: size,
@@ -328,47 +315,55 @@ Widget buildChannelLogo(String? logoUrl, {double size = 44, bool isLocked = fals
         borderRadius: BorderRadius.circular(10),
         border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
       ),
-      child: Icon(Icons.lock_rounded, color: Colors.redAccent, size: size * 0.48),
+      child: Icon(Icons.lock_rounded, color: Colors.redAccent, size: size * 0.5),
     );
   }
 
-  final cleanUrl = (logoUrl ?? '').trim();
   return Container(
     width: size,
     height: size,
     decoration: BoxDecoration(
       color: const Color(0xFF0B0E17),
       borderRadius: BorderRadius.circular(10),
-      border: Border.all(color: Colors.white.withOpacity(0.08)),
+      border: Border.all(color: Colors.white10),
     ),
     clipBehavior: Clip.antiAlias,
-    child: cleanUrl.isEmpty
-        ? Icon(Icons.tv_rounded, color: Colors.white30, size: size * 0.5)
-        : Image.network(
-            cleanUrl,
+    child: url.isNotEmpty
+        ? Image.network(
+            url,
             fit: BoxFit.contain,
-            cacheWidth: (size * 2).toInt(),
-            errorBuilder: (_, __, ___) =>
-                Icon(Icons.tv_rounded, color: Colors.white30, size: size * 0.5),
+            cacheWidth: (size * 2.5).toInt(),
+            errorBuilder: (_, __, ___) => Icon(
+              Icons.live_tv_rounded,
+              color: Colors.white38,
+              size: size * 0.5,
+            ),
+          )
+        : Icon(
+            Icons.live_tv_rounded,
+            color: Colors.white38,
+            size: size * 0.5,
           ),
   );
 }
 
+// ===========================================================================
+// CARD DE PÔSTER DE STREAMING (FILMES E SÉRIES)
+// ===========================================================================
 Widget buildStreamingPosterCard({
   required String title,
   required String subtitle,
-  String? logoUrl,
-  String? badgeText,
-  bool isFocused = false,
+  required String logoUrl,
+  required String badgeText,
+  required bool isFocused,
   bool isFavorite = false,
   bool isAdultLocked = false,
   bool hasDualAudio = false,
   bool isSubtitledOnly = false,
   double? progress,
-  VoidCallback? onTap,
+  required VoidCallback onTap,
+  VoidCallback? onLongPress,
 }) {
-  final cleanLogo = (logoUrl ?? '').trim();
-
   return AnimatedScale(
     scale: isFocused ? 1.06 : 1.0,
     duration: const Duration(milliseconds: 160),
@@ -377,7 +372,7 @@ Widget buildStreamingPosterCard({
       duration: const Duration(milliseconds: 160),
       curve: Curves.easeOutCubic,
       decoration: BoxDecoration(
-        color: const Color(0xFF151A28),
+        color: const Color(0xFF141926),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: isFocused ? const Color(0xFF00E5FF) : Colors.white.withOpacity(0.08),
@@ -399,12 +394,12 @@ Widget buildStreamingPosterCard({
         children: [
           if (isAdultLocked)
             Container(
-              color: const Color(0xFF10131D),
+              color: const Color(0xFF0E121A),
               child: const Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   Icon(Icons.lock_rounded, color: Colors.redAccent, size: 38),
-                  SizedBox(height: 6),
+                  SizedBox(height: 8),
                   Text(
                     'CONTEÚDO +18',
                     style: TextStyle(
@@ -416,39 +411,41 @@ Widget buildStreamingPosterCard({
                 ],
               ),
             )
-          else if (cleanLogo.isNotEmpty)
+          else if (logoUrl.isNotEmpty)
             Image.network(
-              cleanLogo,
+              logoUrl,
               fit: BoxFit.cover,
-              cacheWidth: 300,
+              cacheWidth: 320,
               errorBuilder: (_, __, ___) => Container(
-                color: const Color(0xFF151A28),
+                color: const Color(0xFF141926),
                 child: const Icon(Icons.movie_creation_outlined, color: Colors.white24, size: 42),
               ),
             )
           else
             Container(
-              color: const Color(0xFF151A28),
+              color: const Color(0xFF141926),
               child: const Icon(Icons.movie_creation_outlined, color: Colors.white24, size: 42),
             ),
 
-          // Gradiente escuro para leitura do título na base do card
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.black.withOpacity(0.25),
-                  Colors.transparent,
-                  Colors.black.withOpacity(0.92),
-                ],
-                stops: const [0.0, 0.45, 1.0],
+          // Gradiente inferior para leitura do título
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.15),
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.88),
+                  ],
+                  stops: const [0.0, 0.45, 1.0],
+                ),
               ),
             ),
           ),
 
-          // Badges no topo do card
+          // Topo do Card: Qualidade, Áudio e Estrela de Favorito
           Positioned(
             top: 8,
             left: 8,
@@ -456,18 +453,16 @@ Widget buildStreamingPosterCard({
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                if (badgeText != null && badgeText.isNotEmpty)
-                  buildQualityBadge(badgeText)
-                else
-                  const SizedBox.shrink(),
+                buildQualityBadge(badgeText),
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (hasDualAudio)
                       Container(
+                        margin: const EdgeInsets.only(right: 4),
                         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                         decoration: BoxDecoration(
-                          color: const Color(0xFF00E676).withOpacity(0.88),
+                          color: const Color(0xFF00E676).withOpacity(0.9),
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: const Text(
@@ -481,6 +476,7 @@ Widget buildStreamingPosterCard({
                       )
                     else if (isSubtitledOnly)
                       Container(
+                        margin: const EdgeInsets.only(right: 4),
                         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
                         decoration: BoxDecoration(
                           color: Colors.amber.withOpacity(0.9),
@@ -495,24 +491,22 @@ Widget buildStreamingPosterCard({
                           ),
                         ),
                       ),
-                    if (isFavorite) ...[
-                      const SizedBox(width: 4),
+                    if (isFavorite)
                       Container(
                         padding: const EdgeInsets.all(3),
-                        decoration: const BoxDecoration(
-                          color: Colors.black54,
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.65),
                           shape: BoxShape.circle,
                         ),
-                        child: const Icon(Icons.star_rounded, color: Colors.amber, size: 14),
+                        child: const Icon(Icons.star_rounded, color: Colors.amber, size: 15),
                       ),
-                    ],
                   ],
                 ),
               ],
             ),
           ),
 
-          // Rodapé com título, categoria e barra de progresso
+          // Rodapé do Card: Título, Subtítulo e Barra de Progresso
           Positioned(
             left: 10,
             right: 10,
@@ -525,10 +519,10 @@ Widget buildStreamingPosterCard({
                   title,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w800,
-                    color: Colors.white,
+                    color: isFocused ? const Color(0xFF00E5FF) : Colors.white,
                     height: 1.15,
                   ),
                 ),
@@ -537,10 +531,9 @@ Widget buildStreamingPosterCard({
                   subtitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 10,
-                    color: isFocused ? const Color(0xFF00E5FF) : Colors.white54,
-                    fontWeight: isFocused ? FontWeight.bold : FontWeight.normal,
+                    color: Colors.white60,
                   ),
                 ),
                 if (progress != null && progress > 0.02) ...[
@@ -565,13 +558,66 @@ Widget buildStreamingPosterCard({
 }
 
 // ===========================================================================
-// MODAL DE TESTE DE VELOCIDADE DA INTERNET COM RECOMENDAÇÃO DE RESOLUÇÃO
+// NOTIFICAÇÃO RÁPIDA AO FAVORITAR SEGURANDO O BOTÃO OK
+// ===========================================================================
+void showQuickFavoriteToast(
+  BuildContext context, {
+  required String title,
+  required bool isAdded,
+}) {
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  if (messenger == null) return;
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(
+    SnackBar(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: const Color(0xFF141926),
+      duration: const Duration(milliseconds: 1600),
+      margin: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: isAdded ? Colors.amber : Colors.white24,
+          width: 1.4,
+        ),
+      ),
+      content: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isAdded ? Icons.star_rounded : Icons.star_outline_rounded,
+            color: isAdded ? Colors.amber : Colors.white70,
+            size: 20,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              isAdded
+                  ? 'Adicionado aos Favoritos: $title'
+                  : 'Removido dos Favoritos: $title',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ===========================================================================
+// MODAL DE TESTE DE VELOCIDADE DA INTERNET COM SUGESTÃO DE RESOLUÇÃO
 // ===========================================================================
 Future<void> showSpeedTestDialog(
   BuildContext context, {
   DeviceMode deviceMode = DeviceMode.tv,
 }) async {
-  await showDialog(
+  await showDialog<void>(
     context: context,
     barrierDismissible: true,
     builder: (ctx) => _SpeedTestModal(deviceMode: deviceMode),
@@ -588,148 +634,161 @@ class _SpeedTestModal extends StatefulWidget {
 }
 
 class _SpeedTestModalState extends State<_SpeedTestModal> {
-  bool _isRunning = false;
-  bool _isCompleted = false;
-  String? _errorMsg;
-  double _currentMbps = 0.0;
+  bool _isTesting = false;
+  double _mbps = 0.0;
   double _progress = 0.0;
+  String _statusMessage = 'Iniciando medição da sua conexão...';
+  bool _hasFinished = false;
+  http.Client? _activeClient;
 
   static const List<String> _testUrls = [
-    'https://speed.cloudflare.com/__down?bytes=15000000',
-    'https://proof.ovh.net/files/10Mb.dat',
-    'https://ash-speed.hetzner.com/10MB.bin',
+    'https://speed.cloudflare.com/__down?bytes=8000000',
+    'https://speed.cloudflare.com/__down?bytes=4000000',
+    'https://proof.ovh.net/files/1Mb.dat',
   ];
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _startSpeedTest();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _runSpeedTest());
   }
 
-  Future<void> _startSpeedTest() async {
-    if (_isRunning) return;
+  @override
+  void dispose() {
+    _activeClient?.close();
+    super.dispose();
+  }
 
+  Future<void> _runSpeedTest() async {
+    if (_isTesting) return;
     setState(() {
-      _isRunning = true;
-      _isCompleted = false;
-      _errorMsg = null;
-      _currentMbps = 0.0;
+      _isTesting = true;
+      _hasFinished = false;
+      _mbps = 0.0;
       _progress = 0.05;
+      _statusMessage = 'Conectando ao servidor de teste...';
     });
 
-    HttpClient? client;
-    try {
-      client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
-      HttpClientResponse? response;
+    _activeClient?.close();
+    final client = http.Client();
+    _activeClient = client;
 
+    int totalBytes = 0;
+    final stopwatch = Stopwatch();
+    bool success = false;
+
+    try {
       for (final url in _testUrls) {
+        if (!mounted) return;
         try {
-          final request = await client.getUrl(Uri.parse(url));
-          request.headers.set(HttpHeaders.cacheControlHeader, 'no-cache');
-          response = await request.close().timeout(const Duration(seconds: 8));
+          final request = http.Request('GET', Uri.parse(url));
+          request.headers['Cache-Control'] = 'no-cache';
+          final response = await client.send(request).timeout(const Duration(seconds: 6));
+
           if (response.statusCode >= 200 && response.statusCode < 300) {
-            break;
+            if (!stopwatch.isRunning) stopwatch.start();
+            setState(() => _statusMessage = 'Medindo taxa de download em tempo real...');
+
+            await for (final chunk in response.stream) {
+              if (!mounted) return;
+              totalBytes += chunk.length;
+              final elapsedSec = stopwatch.elapsedMilliseconds / 1000.0;
+              if (elapsedSec > 0.15) {
+                final currentMbps = (totalBytes * 8) / (elapsedSec * 1000000.0);
+                setState(() {
+                  _mbps = currentMbps;
+                  _progress = (elapsedSec / 4.5).clamp(0.1, 0.95);
+                });
+              }
+              if (stopwatch.elapsedMilliseconds >= 4500) {
+                break;
+              }
+            }
+
+            if (totalBytes > 64 * 1024) {
+              success = true;
+              break;
+            }
           }
         } catch (_) {
-          response = null;
+          // Tenta a próxima URL de fallback automaticamente
         }
       }
-
-      if (response == null) {
-        throw const SocketException('Sem resposta dos servidores de teste');
-      }
-
-      int totalBytes = 0;
-      final stopwatch = Stopwatch()..start();
-      const int maxDurationMs = 5500;
-
-      await for (final chunk in response) {
-        if (!mounted) break;
-        totalBytes += chunk.length;
-        final elapsedMs = stopwatch.elapsedMilliseconds;
-
-        if (elapsedMs > 150) {
-          final seconds = elapsedMs / 1000.0;
-          final bits = totalBytes * 8.0;
-          final mbps = (bits / seconds) / 1000000.0;
-
-          setState(() {
-            _currentMbps = mbps;
-            _progress = (elapsedMs / maxDurationMs).clamp(0.08, 0.98);
-          });
-        }
-
-        if (elapsedMs >= maxDurationMs) {
-          break;
-        }
-      }
-
-      stopwatch.stop();
-      if (!mounted) return;
-
-      if (totalBytes == 0) {
-        throw const SocketException('Dados insuficientes');
-      }
-
-      final totalSeconds = (stopwatch.elapsedMilliseconds / 1000.0).clamp(0.5, 20.0);
-      final finalMbps = ((totalBytes * 8.0) / totalSeconds) / 1000000.0;
-
-      setState(() {
-        _currentMbps = finalMbps;
-        _progress = 1.0;
-        _isRunning = false;
-        _isCompleted = true;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() {
-        _isRunning = false;
-        _isCompleted = false;
-        _errorMsg = 'Não foi possível medir a velocidade. Verifique sua conexão com a internet.';
-      });
     } finally {
-      client?.close(force: true);
+      stopwatch.stop();
+      client.close();
+    }
+
+    if (!mounted) return;
+
+    if (success && stopwatch.elapsedMilliseconds > 0) {
+      final elapsedSec = stopwatch.elapsedMilliseconds / 1000.0;
+      final finalMbps = (totalBytes * 8) / (elapsedSec * 1000000.0);
+      setState(() {
+        _mbps = finalMbps;
+        _progress = 1.0;
+        _isTesting = false;
+        _hasFinished = true;
+        _statusMessage = 'Teste concluído com sucesso!';
+      });
+    } else {
+      setState(() {
+        _mbps = 0.0;
+        _progress = 0.0;
+        _isTesting = false;
+        _hasFinished = true;
+        _statusMessage = 'Não foi possível medir a conexão no momento.';
+      });
     }
   }
 
-  Map<String, dynamic> _getResolutionSuggestion(double mbps) {
-    if (mbps >= 25.0) {
+  Map<String, dynamic> _getResolutionSuggestion() {
+    if (_mbps <= 0.1) {
       return {
-        'badge': '4K / ULTRA HD & FULL HD',
-        'color': const Color(0xFF00E676),
-        'description':
-            'Excelente velocidade! Sua internet suporta canais e filmes em 4K, Full HD (1080p) e HD com máxima estabilidade.',
+        'badge': 'SEM MEDIÇÃO',
+        'title': 'Verifique sua conexão com a internet',
+        'desc': 'Não foi possível concluir a leitura. Verifique seu Wi-Fi ou cabo de rede.',
+        'color': Colors.redAccent,
       };
-    } else if (mbps >= 12.0) {
+    } else if (_mbps < 5.0) {
       return {
-        'badge': 'FULL HD (1080p) & HD',
+        'badge': 'RECOMENDADO: CANAIS SD',
+        'title': 'Conexão Básica (Ideal para Resolução SD)',
+        'desc':
+            'Para evitar travamentos, dê preferência aos canais SD (480p). Canais FHD ou 4K podem apresentar pausas.',
+        'color': Colors.orangeAccent,
+      };
+    } else if (_mbps < 15.0) {
+      return {
+        'badge': 'RECOMENDADO: CANAIS HD (720p)',
+        'title': 'Boa Conexão (Ideal para Resolução HD)',
+        'desc':
+            'Sua velocidade permite assistir canais e filmes em qualidade HD (720p) com boa estabilidade.',
         'color': const Color(0xFF00E5FF),
-        'description':
-            'Ótima conexão! Recomendamos assistir canais e filmes em Full HD (FHD) ou HD para reprodução fluida e sem travamentos.',
       };
-    } else if (mbps >= 5.0) {
+    } else if (_mbps < 30.0) {
       return {
-        'badge': 'HD (720p)',
-        'color': Colors.amber,
-        'description':
-            'Conexão moderada. Recomendamos dar preferência aos canais em qualidade HD ou SD para evitar pausas de carregamento.',
+        'badge': 'RECOMENDADO: FULL HD (1080p)',
+        'title': 'Ótima Conexão (Pronta para Full HD)',
+        'desc':
+            'Você pode assistir canais ao vivo, filmes e séries em Full HD (1080p) com excelente fluidez.',
+        'color': const Color(0xFF00E676),
       };
     } else {
       return {
-        'badge': 'SD (DEFINIÇÃO PADRÃO)',
-        'color': Colors.orangeAccent,
-        'description':
-            'Velocidade baixa no momento. Recomendamos selecionar canais em resolução SD para assistir sem congelamentos.',
+        'badge': 'RECOMENDADO: 4K / ULTRA HD & FHD',
+        'title': 'Velocidade Máxima (Suporta 4K e Full HD)',
+        'desc':
+            'Sua internet tem folga para reproduzir qualquer canal ou filme em 4K / Ultra HD e Full HD sem engasgos!',
+        'color': const Color(0xFFFFD54F),
       };
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final suggestion = _getResolutionSuggestion(_currentMbps);
-    final Color accentColor = suggestion['color'] as Color;
+    final suggestion = _getResolutionSuggestion();
+    final Color tierColor = suggestion['color'] as Color;
 
     return Dialog(
       backgroundColor: const Color(0xFF111520),
@@ -738,7 +797,7 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
         side: BorderSide(color: const Color(0xFF00E5FF).withOpacity(0.3), width: 1.5),
       ),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 450),
+        constraints: const BoxConstraints(maxWidth: 460),
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
@@ -762,14 +821,14 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
                         Text(
                           'Teste de Velocidade',
                           style: TextStyle(
-                            fontSize: 17,
+                            fontSize: 18,
                             fontWeight: FontWeight.w900,
                             color: Colors.white,
                           ),
                         ),
                         SizedBox(height: 2),
                         Text(
-                          'Diagnóstico de conexão e sugestão de resolução',
+                          'Diagnóstico de rede e resolução recomendada',
                           style: TextStyle(fontSize: 11.5, color: Colors.white54),
                         ),
                       ],
@@ -779,7 +838,7 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
               ),
               const SizedBox(height: 24),
 
-              // Medidor Principal em Mbps
+              // Medidor Central em Mbps
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
@@ -790,108 +849,92 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
                 ),
                 child: Column(
                   children: [
-                    Text(
-                      _currentMbps.toStringAsFixed(1),
-                      style: TextStyle(
-                        fontSize: 44,
-                        fontWeight: FontWeight.w900,
-                        color: _isCompleted ? accentColor : const Color(0xFF00E5FF),
-                        height: 1.0,
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.baseline,
+                      textBaseline: TextBaseline.alphabetic,
+                      children: [
+                        Text(
+                          _mbps.toStringAsFixed(1),
+                          style: const TextStyle(
+                            fontSize: 44,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF00E5FF),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const Text(
+                          'Mbps',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white70,
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
-                    const Text(
-                      'Mbps (Megabits por segundo)',
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: Colors.white54,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(6),
                       child: LinearProgressIndicator(
-                        value: _isRunning ? _progress : (_isCompleted ? 1.0 : 0.0),
+                        value: _isTesting ? _progress : (_hasFinished ? 1.0 : 0.0),
                         minHeight: 6,
                         backgroundColor: Colors.white12,
-                        color: _isCompleted ? accentColor : const Color(0xFF00E5FF),
+                        color: const Color(0xFF00E5FF),
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 10),
                     Text(
-                      _isRunning
-                          ? 'Medindo estabilidade e taxa de download...'
-                          : _isCompleted
-                              ? 'Teste concluído com sucesso'
-                              : 'Aguardando início',
-                      style: const TextStyle(fontSize: 11, color: Colors.white60),
+                      _statusMessage,
+                      style: const TextStyle(fontSize: 12, color: Colors.white60),
                     ),
                   ],
                 ),
               ),
 
-              if (_errorMsg != null) ...[
-                const SizedBox(height: 16),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.redAccent.withOpacity(0.15),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.redAccent.withOpacity(0.4)),
-                  ),
-                  child: Text(
-                    _errorMsg!,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.redAccent, fontSize: 12),
-                  ),
-                ),
-              ],
-
-              // Card de Recomendação de Resolução
-              if (_isCompleted && _errorMsg == null) ...[
+              if (_hasFinished) ...[
                 const SizedBox(height: 16),
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(14),
                   decoration: BoxDecoration(
-                    color: accentColor.withOpacity(0.1),
+                    color: tierColor.withOpacity(0.12),
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: accentColor.withOpacity(0.45)),
+                    border: Border.all(color: tierColor.withOpacity(0.5)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Icon(Icons.verified_rounded, color: accentColor, size: 18),
-                          const SizedBox(width: 6),
-                          const Text(
-                            'RESOLUÇÃO RECOMENDADA:',
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w900,
-                              color: Colors.white70,
-                              letterSpacing: 0.6,
-                            ),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: tierColor,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          suggestion['badge'] as String,
+                          style: const TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.black,
                           ),
-                        ],
+                        ),
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 8),
                       Text(
-                        suggestion['badge'] as String,
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w900,
-                          color: accentColor,
+                        suggestion['title'] as String,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
                         ),
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        suggestion['description'] as String,
+                        suggestion['desc'] as String,
                         style: const TextStyle(
-                          fontSize: 11.5,
-                          color: Colors.white,
+                          fontSize: 12,
+                          color: Colors.white70,
                           height: 1.35,
                         ),
                       ),
@@ -901,36 +944,30 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
               ],
 
               const SizedBox(height: 20),
-
-              // Botões de Ação (Refazer / Fechar)
               Row(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
-                  if (!_isRunning)
+                  if (!_isTesting)
                     TVFocusableItem(
                       autoScroll: false,
-                      onSelect: _startSpeedTest,
+                      onSelect: _runSpeedTest,
                       builder: (c, f) => Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                         decoration: BoxDecoration(
-                          color: f ? Colors.white.withOpacity(0.15) : Colors.white.withOpacity(0.06),
+                          color: f ? Colors.white.withOpacity(0.15) : Colors.transparent,
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: f ? const Color(0xFF00E5FF) : Colors.white24),
+                          border: Border.all(
+                            color: f ? const Color(0xFF00E5FF) : Colors.white24,
+                            width: f ? 1.8 : 1,
+                          ),
                         ),
-                        child: const Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.refresh_rounded, size: 16, color: Colors.white),
-                            SizedBox(width: 6),
-                            Text(
-                              'Refazer Teste',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                            ),
-                          ],
+                        child: const Text(
+                          'Refazer Teste',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
                         ),
                       ),
                     ),
@@ -948,7 +985,7 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
                       child: const Text(
                         'Fechar',
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 12.5,
                           fontWeight: FontWeight.w900,
                           color: Colors.black,
                         ),
@@ -966,149 +1003,157 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
 }
 
 // ===========================================================================
-// CONTROLE PARENTAL E TECLADO VIRTUAL DA TV
+// CONTROLE PARENTAL (SENHA PIN PARA CONTEÚDO ADULTO +18)
 // ===========================================================================
+const String _kParentalPinPrefKey = 'unex_parental_pin_v1';
+
+Future<String> _getSavedPin() async {
+  final prefs = await SharedPreferences.getInstance();
+  return prefs.getString(_kParentalPinPrefKey) ?? '0000';
+}
+
+Future<void> _saveNewPin(String pin) async {
+  final prefs = await SharedPreferences.getInstance();
+  await prefs.setString(_kParentalPinPrefKey, pin);
+}
+
 Future<bool> showParentalPinPrompt(
   BuildContext context, {
-  DeviceMode deviceMode = DeviceMode.mobile,
+  DeviceMode deviceMode = DeviceMode.tv,
 }) async {
-  final savedPin = await ParentalControlManager.getPin();
+  final savedPin = await _getSavedPin();
   if (!context.mounted) return false;
 
-  String typedPin = '';
+  String entered = '';
   String? errorText;
 
   final result = await showDialog<bool>(
     context: context,
-    barrierDismissible: true,
-    builder: (ctx) {
-      return StatefulBuilder(
-        builder: (ctx, setModalState) {
-          void addDigit(String d) {
-            if (typedPin.length < 4) {
-              setModalState(() {
-                typedPin += d;
-                errorText = null;
-              });
-              if (typedPin.length == 4) {
-                if (typedPin == savedPin) {
-                  Navigator.pop(ctx, true);
-                } else {
-                  setModalState(() {
-                    typedPin = '';
-                    errorText = 'Senha incorreta. Tente novamente.';
-                  });
-                }
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setModalState) {
+        void onDigit(String digit) {
+          if (entered.length < 4) {
+            setModalState(() {
+              entered += digit;
+              errorText = null;
+            });
+            if (entered.length == 4) {
+              if (entered == savedPin) {
+                Navigator.pop(ctx, true);
+              } else {
+                setModalState(() {
+                  entered = '';
+                  errorText = 'Senha incorreta! Padrão: 0000';
+                });
               }
             }
           }
+        }
 
-          return Dialog(
-            backgroundColor: const Color(0xFF111520),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
-              side: const BorderSide(color: Colors.white12),
-            ),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 340),
-              child: Padding(
-                padding: const EdgeInsets.all(22),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.lock_rounded, color: Colors.redAccent, size: 34),
+        return Dialog(
+          backgroundColor: const Color(0xFF111520),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: Colors.white12),
+          ),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 340),
+            child: Padding(
+              padding: const EdgeInsets.all(22),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_person_rounded, color: Colors.redAccent, size: 34),
+                  const SizedBox(height: 10),
+                  const Text(
+                    'Controle Parental',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Digite o PIN de 4 dígitos (Padrão: 0000)',
+                    style: TextStyle(fontSize: 11.5, color: Colors.white54),
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(4, (i) {
+                      final filled = i < entered.length;
+                      return Container(
+                        width: 16,
+                        height: 16,
+                        margin: const EdgeInsets.symmetric(horizontal: 8),
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: filled ? const Color(0xFF00E5FF) : Colors.white12,
+                          border: Border.all(color: Colors.white30),
+                        ),
+                      );
+                    }),
+                  ),
+                  if (errorText != null) ...[
                     const SizedBox(height: 10),
-                    const Text(
-                      'Controle Parental (+18)',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                    Text(
+                      errorText!,
+                      style: const TextStyle(color: Colors.redAccent, fontSize: 11.5),
                     ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'Digite a senha de 4 dígitos (Padrão: 0000)',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 11.5, color: Colors.white54),
-                    ),
-                    const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(4, (i) {
-                        final filled = i < typedPin.length;
-                        return Container(
-                          width: 16,
-                          height: 16,
-                          margin: const EdgeInsets.symmetric(horizontal: 8),
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: filled ? const Color(0xFF00E5FF) : Colors.white12,
-                            border: Border.all(color: Colors.white30),
-                          ),
-                        );
-                      }),
-                    ),
-                    if (errorText != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        errorText!,
-                        style: const TextStyle(color: Colors.redAccent, fontSize: 11.5),
-                      ),
-                    ],
-                    const SizedBox(height: 18),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      alignment: WrapAlignment.center,
-                      children: [
-                        for (final d in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'])
-                           SizedBox(
-                            width: 68,
-                            height: 42,
-                            child: TVFocusableItem(
-                              autofocus: d == '1',
-                              autoScroll: false,
-                              onSelect: () => addDigit(d),
-                              builder: (c, f) => Container(
-                                alignment: Alignment.center,
-                                decoration: BoxDecoration(
-                                  color: f ? const Color(0xFF00E5FF) : const Color(0xFF1A2030),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Text(
-                                  d,
-                                  style: TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w900,
-                                    color: f ? Colors.black : Colors.white,
-                                  ),
-                                ),
-                              ),
+                  ],
+                  const SizedBox(height: 18),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    alignment: WrapAlignment.center,
+                    children: [
+                      for (final d in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'])
+                        TVFocusableItem(
+                          autofocus: d == '1',
+                          autoScroll: false,
+                          onSelect: () => onDigit(d),
+                          builder: (c, f) => Container(
+                            width: 58,
+                            height: 44,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: f ? const Color(0xFF00E5FF) : const Color(0xFF1A2030),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: f ? Colors.white : Colors.white12),
                             ),
-                          ),
-                        SizedBox(
-                          width: 68,
-                          height: 42,
-                          child: TVFocusableItem(
-                            autoScroll: false,
-                            onSelect: () => Navigator.pop(ctx, false),
-                            builder: (c, f) => Container(
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: f ? Colors.redAccent : Colors.white10,
-                                borderRadius: BorderRadius.circular(10),
+                            child: Text(
+                              d,
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w900,
+                                color: f ? Colors.black : Colors.white,
                               ),
-                              child: const Icon(Icons.close, size: 18, color: Colors.white),
                             ),
                           ),
                         ),
-                      ],
-                    ),
-                  ],
-                ),
+                      TVFocusableItem(
+                        autoScroll: false,
+                        onSelect: () => Navigator.pop(ctx, false),
+                        builder: (c, f) => Container(
+                          width: 126,
+                          height: 44,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: f ? Colors.redAccent : Colors.white10,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: const Text(
+                            'Cancelar',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
-          );
-        },
-      );
-    },
+          ),
+        );
+      },
+    ),
   );
 
   return result ?? false;
@@ -1116,78 +1161,49 @@ Future<bool> showParentalPinPrompt(
 
 Future<void> showChangeParentalPinDialog(
   BuildContext context, {
-  DeviceMode deviceMode = DeviceMode.mobile,
+  DeviceMode deviceMode = DeviceMode.tv,
 }) async {
-  final currentCtrl = TextEditingController();
-  final newCtrl = TextEditingController();
-  String? errorMsg;
+  final unlocked = await showParentalPinPrompt(context, deviceMode: deviceMode);
+  if (!unlocked || !context.mounted) return;
 
-  await showDialog(
+  final controller = TextEditingController();
+  await showDialog<void>(
     context: context,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setModalState) => AlertDialog(
-        backgroundColor: const Color(0xFF111520),
-        title: const Text(
-          'Alterar Senha Parental',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+    builder: (ctx) => AlertDialog(
+      backgroundColor: const Color(0xFF111520),
+      title: const Text('Nova Senha Parental (4 dígitos)'),
+      content: TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        maxLength: 4,
+        obscureText: true,
+        decoration: const InputDecoration(
+          hintText: 'Ex: 1234',
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: currentCtrl,
-              keyboardType: TextInputType.number,
-              obscureText: true,
-              maxLength: 4,
-              decoration: const InputDecoration(
-                labelText: 'Senha Atual (Padrão: 0000)',
-                counterText: '',
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: newCtrl,
-              keyboardType: TextInputType.number,
-              obscureText: true,
-              maxLength: 4,
-              decoration: const InputDecoration(
-                labelText: 'Nova Senha (4 dígitos)',
-                counterText: '',
-              ),
-            ),
-            if (errorMsg != null) ...[
-              const SizedBox(height: 10),
-              Text(errorMsg!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
-            ],
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              final saved = await ParentalControlManager.getPin();
-              if (currentCtrl.text.trim() != saved) {
-                setModalState(() => errorMsg = 'A senha atual está incorreta.');
-                return;
-              }
-              if (newCtrl.text.trim().length != 4) {
-                setModalState(() => errorMsg = 'A nova senha deve ter 4 dígitos.');
-                return;
-              }
-              await ParentalControlManager.setPin(newCtrl.text.trim());
-              if (ctx.mounted) Navigator.pop(ctx);
-            },
-            child: const Text('Salvar'),
-          ),
-        ],
       ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx),
+          child: const Text('Cancelar'),
+        ),
+        ElevatedButton(
+          onPressed: () async {
+            final text = controller.text.trim();
+            if (text.length == 4) {
+              await _saveNewPin(text);
+              if (ctx.mounted) Navigator.pop(ctx);
+            }
+          },
+          child: const Text('Salvar'),
+        ),
+      ],
     ),
   );
 }
 
+// ===========================================================================
+// TECLADO VIRTUAL OTIMIZADO PARA CONTROLE REMOTO DE TV
+// ===========================================================================
 Future<void> showTVVirtualKeyboard(
   BuildContext context,
   TextEditingController controller,
@@ -1201,14 +1217,14 @@ Future<void> showTVVirtualKeyboard(
     '4', '5', '6', '7', '8', '9',
   ];
 
-  await showDialog(
+  await showDialog<void>(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setModalState) {
         void updateText(String newText) {
           controller.text = newText;
-          setModalState(() {});
           onChanged?.call(newText);
+          setModalState(() {});
         }
 
         return Dialog(
@@ -1220,7 +1236,7 @@ Future<void> showTVVirtualKeyboard(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 520),
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.all(22),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -1246,56 +1262,118 @@ Future<void> showTVVirtualKeyboard(
                       ),
                     ),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 16),
                   Wrap(
                     spacing: 6,
                     runSpacing: 6,
                     alignment: WrapAlignment.center,
                     children: [
                       for (int i = 0; i < keys.length; i++)
-                        SizedBox(
-                          width: 42,
-                          height: 38,
-                          child: TVFocusableItem(
-                            autofocus: i == 0,
-                            autoScroll: false,
-                            onSelect: () => updateText(controller.text + keys[i]),
-                            builder: (c, f) => Container(
-                              alignment: Alignment.center,
-                              decoration: BoxDecoration(
-                                color: f ? const Color(0xFF00E5FF) : const Color(0xFF1A2030),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                keys[i],
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: f ? Colors.black : Colors.white,
-                                ),
+                        TVFocusableItem(
+                          autofocus: i == 0,
+                          autoScroll: false,
+                          onSelect: () => updateText(controller.text + keys[i]),
+                          builder: (c, f) => Container(
+                            width: 42,
+                            height: 38,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: f ? const Color(0xFF00E5FF) : const Color(0xFF1A2030),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(
+                              keys[i],
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: f ? Colors.black : Colors.white,
                               ),
                             ),
                           ),
                         ),
                     ],
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 14),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      _buildKeyboardActionBtn('ESPAÇO', () => updateText('${controller.text} ')),
+                      TVFocusableItem(
+                        autoScroll: false,
+                        onSelect: () => updateText('${controller.text} '),
+                        builder: (c, f) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: f ? const Color(0xFF00E5FF) : const Color(0xFF1A2030),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'ESPAÇO',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: f ? Colors.black : Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
                       const SizedBox(width: 8),
-                      _buildKeyboardActionBtn('APAGAR', () {
-                        if (controller.text.isNotEmpty) {
-                          updateText(controller.text.substring(0, controller.text.length - 1));
-                        }
-                      }),
+                      TVFocusableItem(
+                        autoScroll: false,
+                        onSelect: () {
+                          if (controller.text.isNotEmpty) {
+                            updateText(controller.text.substring(0, controller.text.length - 1));
+                          }
+                        },
+                        builder: (c, f) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: f ? Colors.orangeAccent : const Color(0xFF1A2030),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            'APAGAR',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: f ? Colors.black : Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
                       const SizedBox(width: 8),
-                      _buildKeyboardActionBtn('LIMPAR', () => updateText('')),
+                      TVFocusableItem(
+                        autoScroll: false,
+                        onSelect: () => updateText(''),
+                        builder: (c, f) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: f ? Colors.redAccent : const Color(0xFF1A2030),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text(
+                            'LIMPAR',
+                            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
                       const SizedBox(width: 8),
-                      _buildKeyboardActionBtn(
-                        'CONCLUIR',
-                        () => Navigator.pop(ctx),
-                        isPrimary: true,
+                      TVFocusableItem(
+                        autoScroll: false,
+                        onSelect: () => Navigator.pop(ctx),
+                        builder: (c, f) => Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: f ? Colors.white : const Color(0xFF00E5FF),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text(
+                            'CONCLUIR',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w900,
+                              color: Colors.black,
+                            ),
+                          ),
+                        ),
                       ),
                     ],
                   ),
@@ -1305,36 +1383,6 @@ Future<void> showTVVirtualKeyboard(
           ),
         );
       },
-    ),
-  );
-}
-
-Widget _buildKeyboardActionBtn(
-  String label,
-  VoidCallback onTap, {
-  bool isPrimary = false,
-}) {
-  return TVFocusableItem(
-    autoScroll: false,
-    onSelect: onTap,
-    builder: (c, f) => Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-      decoration: BoxDecoration(
-        color: f
-            ? Colors.white
-            : isPrimary
-                ? const Color(0xFF00E5FF)
-                : const Color(0xFF1A2030),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 11.5,
-          fontWeight: FontWeight.w900,
-          color: (f || isPrimary) ? Colors.black : Colors.white,
-        ),
-      ),
     ),
   );
 }
