@@ -374,6 +374,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
     final Map<String, Map<int, List<StreamItem>>> grouped = {};
     final Map<String, String> logos = {};
     final Map<String, String> groups = {};
+    final Map<String, String> qualities = {};
 
     final regEp = RegExp(
       r'^(.*?)\s*(?:S(\d{1,2})\s*E(\d{1,3})|(\d{1,2})x(\d{1,3})|Temporada\s*(\d{1,2}).*?Ep(?:is[oó]dio)?\s*(\d{1,3}))',
@@ -401,6 +402,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
         logos[seriesTitle] = ep.logo;
       }
       groups.putIfAbsent(seriesTitle, () => ep.group);
+      qualities.putIfAbsent(seriesTitle, () => ep.qualityTag);
     }
 
     return grouped.entries.map<SeriesGroup>((entry) {
@@ -410,6 +412,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
         title: sTitle,
         logo: logos[sTitle] ?? '',
         group: groups[sTitle] ?? 'Séries',
+        qualityTag: qualities[sTitle] ?? 'HD',
         seasons: entry.value,
       );
     }).toList();
