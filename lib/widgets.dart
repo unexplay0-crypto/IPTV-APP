@@ -7,7 +7,7 @@ import 'package:http/http.dart' as http;
 import 'core.dart';
 
 // ===========================================================================
-// ARMAZENAMENTO LOCAL NATIVO (SEM DEPENDER DE SHARED_PREFERENCES)
+// ARMAZENAMENTO LOCAL NATIVO (SEM DEPENDER DE PACOTES EXTERNOS)
 // ===========================================================================
 class LocalAppStorage {
   static Map<String, dynamic>? _cache;
@@ -83,7 +83,6 @@ class LocalAppStorage {
 
 // ===========================================================================
 // COMPONENTE DE FOCO PARA CONTROLE REMOTO DE TV E TOQUE
-// (Suporta clique curto onSelect e segurar botão OK onLongSelect)
 // ===========================================================================
 class TVFocusableItem extends StatefulWidget {
   final Widget Function(BuildContext context, bool isFocused) builder;
@@ -1069,7 +1068,7 @@ class _SpeedTestModalState extends State<_SpeedTestModal> {
 }
 
 // ===========================================================================
-// CONTROLE PARENTAL (USANDO ARMAZENAMENTO LOCAL NATIVO)
+// CONTROLE PARENTAL (SUPORTA AMBOS OS NOMES DE FUNÇÃO)
 // ===========================================================================
 const String _kParentalPinPrefKey = 'unex_parental_pin_v1';
 
@@ -1263,6 +1262,14 @@ Future<void> showChangeParentalPinDialog(
       ],
     ),
   );
+}
+
+/// Alias compatível com chamadas legadas em `tv_screen.dart` ou `mobile_screen.dart`
+Future<void> showParentalControlSettingsDialog(
+  BuildContext context, {
+  DeviceMode deviceMode = DeviceMode.tv,
+}) {
+  return showChangeParentalPinDialog(context, deviceMode: deviceMode);
 }
 
 // ===========================================================================
