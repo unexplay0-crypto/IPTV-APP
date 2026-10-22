@@ -90,21 +90,25 @@ List<StreamItem> _parseM3uInBackground(String rawContent) {
       final lowerGroup = currentGroup.toLowerCase();
 
       ContentType type = ContentType.live;
-      if (lowerUrl.contains('/series/') ||
-          regSeries.hasMatch(currentName) ||
-          lowerGroup.contains('série') ||
-          lowerGroup.contains('serie') ||
-          lowerGroup.contains('novela')) {
-        type = ContentType.series;
-      } else if (lowerUrl.contains('/movie/') ||
-          lowerUrl.endsWith('.mp4') ||
-          lowerUrl.endsWith('.mkv') ||
-          lowerGroup.contains('filme') ||
-          lowerGroup.contains('vod') ||
-          lowerGroup.contains('cinema') ||
-          lowerGroup.contains('coletânea') ||
-          lowerGroup.contains('lançamento')) {
-        type = ContentType.movie;
+      // URL é a fonte da verdade: .ts ou /live/ = sempre canal ao vivo (ignora nome do grupo)
+      final bool isLiveUrl = lowerUrl.contains('/live/') || lowerUrl.endsWith('.ts');
+      if (!isLiveUrl) {
+        if (lowerUrl.contains('/series/') ||
+            regSeries.hasMatch(currentName) ||
+            lowerGroup.contains('série') ||
+            lowerGroup.contains('serie') ||
+            lowerGroup.contains('novela')) {
+          type = ContentType.series;
+        } else if (lowerUrl.contains('/movie/') ||
+            lowerUrl.endsWith('.mp4') ||
+            lowerUrl.endsWith('.mkv') ||
+            lowerGroup.contains('filme') ||
+            lowerGroup.contains('vod') ||
+            lowerGroup.contains('cinema') ||
+            lowerGroup.contains('coletânea') ||
+            lowerGroup.contains('lançamento')) {
+          type = ContentType.movie;
+        }
       }
 
       final qMatch = regQuality.firstMatch(currentName) ?? regQuality.firstMatch(currentGroup);
@@ -237,11 +241,42 @@ class _UnexRootControllerState extends State<UnexRootController> {
     }
 
     if (savedM3u.isNotEmpty) {
-      setState(() => _isCheckingBoot = false);
-      await _loadPlaylistFromUrl(
+      // 1) Tenta cache offline primeiro (inicio instantaneo, sem tela de login)
+      bool cacheHit = false;
+      try {
+        final cached = await LocalAppStorage.loadOfflinePlaylist();
+        if (cached.isNotEmpty) {
+          final cachedGroups = _buildSeriesGroups(cached);
+          final firstLiveCached = cached.cast<StreamItem?>().firstWhere(
+                (i) => i != null && i.type == ContentType.live && !i.isAdult,
+                orElse: () => null,
+              );
+          if (mounted) {
+            setState(() {
+              _allItems = cached;
+              _allSeriesGroups = cachedGroups;
+              _selectedLiveChannel = firstLiveCached;
+              _isLoggedIn = true;
+              _isCheckingBoot = false;
+            });
+          }
+          if (firstLiveCached != null) {
+            SharedStreamEngine.instance.openStream(firstLiveCached);
+          }
+          cacheHit = true;
+        }
+      } catch (_) {}
+
+      // 2) Atualiza em segundo plano (silencioso) com a versao online
+      unawaited(_loadPlaylistFromUrl(
         savedM3u,
         fromActivationCode: activatedByCode,
-      );
+        silent: cacheHit,
+      ));
+
+      if (!cacheHit) {
+        setState(() => _isCheckingBoot = false);
+      }
     } else {
       setState(() => _isCheckingBoot = false);
     }
@@ -306,6 +341,9 @@ class _UnexRootControllerState extends State<UnexRootController> {
         }
 
         final seriesGroups = _buildSeriesGroups(parsedItems);
+
+        // Salva lista em cache offline para inicio rapido nas proximas vezes
+        await LocalAppStorage.saveOfflinePlaylist(parsedItems);
 
         await LocalAppStorage.setString(_kPrefM3uUrl, cleanUrl);
         await LocalAppStorage.setBool(_kPrefActivatedByCode, fromActivationCode);
@@ -385,7 +423,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
   List<SeriesGroup> _buildSeriesGroups(List<StreamItem> items) {
     final seriesItems = items.where((i) => i.type == ContentType.series).toList();
     final Map<String, Map<int, List<StreamItem>>> grouped = {};
-    final Map<String, String> logos = {};
+    final Map<String, Map<String, int>> logoVotes = {};
     final Map<String, String> groups = {};
     final Map<String, String> qualities = {};
     final Map<String, bool> adults = {};
@@ -412,8 +450,9 @@ class _UnexRootControllerState extends State<UnexRootController> {
       grouped.putIfAbsent(seriesTitle, () => {});
       grouped[seriesTitle]!.putIfAbsent(seasonNum, () => []).add(ep);
 
-      if ((logos[seriesTitle] ?? '').isEmpty && ep.logo.isNotEmpty) {
-        logos[seriesTitle] = ep.logo;
+      if (ep.logo.isNotEmpty) {
+        final votes = logoVotes.putIfAbsent(seriesTitle, () => <String, int>{});
+        votes[ep.logo] = (votes[ep.logo] ?? 0) + 1;
       }
       groups.putIfAbsent(seriesTitle, () => ep.group);
       qualities.putIfAbsent(seriesTitle, () => ep.qualityTag);
@@ -425,7 +464,17 @@ class _UnexRootControllerState extends State<UnexRootController> {
       return SeriesGroup(
         id: 'series_${sTitle.hashCode}',
         title: sTitle,
-        logo: logos[sTitle] ?? '',
+        logo: () {
+          String best = '';
+          int bestCount = 0;
+          logoVotes[sTitle]?.forEach((l, c) {
+            if (c > bestCount) {
+              bestCount = c;
+              best = l;
+            }
+          });
+          return best;
+        }(),
         group: groups[sTitle] ?? 'Séries',
         qualityTag: qualities[sTitle] ?? 'HD',
         isAdult: adults[sTitle] ?? false,
@@ -674,6 +723,8 @@ class _UnexRootControllerState extends State<UnexRootController> {
                             ? Image.network(
                                 movie.logo,
                                 fit: BoxFit.cover,
+                                cacheWidth: 320,
+                                gaplessPlayback: true,
                                 errorBuilder: (_, __, ___) => Container(
                                   color: const Color(0xFF1A2030),
                                   child: const Icon(Icons.movie, size: 48, color: Colors.white24),
