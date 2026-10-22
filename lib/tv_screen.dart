@@ -274,11 +274,36 @@ class _TVLayoutScreenState extends State<TVLayoutScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: _isSidebarFocused,
+      canPop: false,
       onPopInvoked: (didPop) {
-        if (!didPop && !_isSidebarFocused) {
+        if (didPop) return;
+        if (!_isSidebarFocused) {
           _focusActiveSidebarItem();
+          return;
         }
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: const Color(0xFF111520),
+            title: const Text('Sair do aplicativo?',
+                style: TextStyle(color: Colors.white, fontSize: 18)),
+            content: const Text('Deseja realmente fechar o UNEX PLAY?',
+                style: TextStyle(color: Colors.white70, fontSize: 14)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Não', style: TextStyle(color: Colors.white70)),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  SystemNavigator.pop();
+                },
+                child: const Text('Sim, sair', style: TextStyle(color: Color(0xFF00E5FF))),
+              ),
+            ],
+          ),
+        );
       },
       child: Scaffold(
         backgroundColor: const Color(0xFF07090E),

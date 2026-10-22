@@ -773,7 +773,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                                   autofocus: true,
                                   autoScroll: false,
                                   onSelect: () {
-                                    Navigator.pop(ctx);
                                     _openFullScreen(movie, [movie]);
                                   },
                                   builder: (c, f) => Container(
@@ -995,7 +994,6 @@ class _UnexRootControllerState extends State<UnexRootController> {
                           return TVFocusableItem(
                             autofocus: idx == 0,
                             onSelect: () {
-                              Navigator.pop(ctx);
                               _openFullScreen(ep, episodes);
                             },
                             builder: (c, f) => Container(

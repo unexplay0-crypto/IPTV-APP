@@ -135,6 +135,12 @@ class _AtivacaoScreenState extends State<AtivacaoScreen> {
     } else {
       _fieldFocusNodes[index].unfocus();
     }
+    // Auto-envio: quando os 6 digitos estao completos, carrega a lista automaticamente
+    if (_isCodeComplete && !_isLoading) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _ativarCodigo();
+      });
+    }
     setState(() {});
   }
 

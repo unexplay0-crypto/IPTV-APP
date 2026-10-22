@@ -413,7 +413,7 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          currentItem.type == ContentType.live ? 'Canais' : 'Episódios',
+                          currentItem.type == ContentType.series ? 'Episódios' : 'Canais',
                           style: const TextStyle(
                             fontWeight: FontWeight.w800,
                             color: Colors.white,
@@ -1150,12 +1150,12 @@ class _SmartAdaptivePlayerScreenState extends State<SmartAdaptivePlayerScreen> {
                   ),
 
                   // Pílula 3: Lista de Canais ou Episódios
-                  if (widget.playlist.isNotEmpty) ...[
+                  if (widget.playlist.isNotEmpty && currentItem.type != ContentType.movie) ...[
                     const SizedBox(width: 8),
                     _buildMinimalActionPill(
                       focusNode: _channelsBtnNode,
                       icon: isVod ? Icons.video_library_rounded : Icons.live_tv_rounded,
-                      label: isVod ? 'Episódios' : 'Canais',
+                      label: currentItem.type == ContentType.series ? 'Episódios' : 'Canais',
                       isPrimary: true,
                       onTap: () {
                         _hideTimer?.cancel();
