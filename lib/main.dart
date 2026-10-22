@@ -244,7 +244,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
       // 1) Tenta cache offline primeiro (inicio instantaneo, sem tela de login)
       bool cacheHit = false;
       try {
-        final cached = await LocalAppStorage.loadOfflinePlaylist();
+        final cached = await AppStorage.loadOfflinePlaylist();
         if (cached.isNotEmpty) {
           final cachedGroups = _buildSeriesGroups(cached);
           final firstLiveCached = cached.cast<StreamItem?>().firstWhere(
@@ -343,7 +343,7 @@ class _UnexRootControllerState extends State<UnexRootController> {
         final seriesGroups = _buildSeriesGroups(parsedItems);
 
         // Salva lista em cache offline para inicio rapido nas proximas vezes
-        await LocalAppStorage.saveOfflinePlaylist(parsedItems);
+        await AppStorage.saveOfflinePlaylist(parsedItems);
 
         await LocalAppStorage.setString(_kPrefM3uUrl, cleanUrl);
         await LocalAppStorage.setBool(_kPrefActivatedByCode, fromActivationCode);
